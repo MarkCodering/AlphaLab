@@ -1,10 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   ApprovalArtifactSchema,
+  ArtifactReferenceSchema,
   BudgetLimitSchema,
   CampaignSchema,
   DomainEventSchema,
+  EvidenceRecordSchema,
+  ExperimentPlanSchema,
+  ExperimentResultSchema,
+  HypothesisSchema,
   ProposedActionSchema,
+  ReproducibilityBundleManifestSchema,
   TargetVersionSchema,
   TransitionPredicateSchema,
   VerificationReportSchema,
@@ -12,7 +18,10 @@ import {
   type ApprovalArtifact,
   type Campaign,
   type DomainEvent,
+  type EvidenceRecord,
+  type ReproducibilityBundleManifest,
   type TargetVersion,
+  type VerificationReport,
 } from '@alphalab/contracts';
 import { DomainError, emptyBudgetUsage, transitionCampaign } from '@alphalab/domain';
 import { classifyAction, digestAction } from '@alphalab/policy';
@@ -20,6 +29,7 @@ import { z } from 'zod';
 import {
   CONTROL_STORE,
   type ApprovalRequestRecord,
+  type ArtifactRecord,
   type ControlStore,
   type ProjectRecord,
 } from '../persistence/control-store.js';
@@ -64,9 +74,15 @@ const ApprovalDecisionSchema = z.object({
 });
 
 const WorkerSnapshotSchema = z.object({
+  workflowId: z.string().min(3),
+  runId: z.string().min(3),
   campaign: CampaignSchema,
+  hypothesis: HypothesisSchema.optional(),
+  plan: ExperimentPlanSchema.optional(),
   proposedAction: ProposedActionSchema.optional(),
+  results: z.array(ExperimentResultSchema),
   verificationReport: VerificationReportSchema.optional(),
+  bundle: ReproducibilityBundleManifestSchema.optional(),
 });
 
 @Injectable()
@@ -176,6 +192,26 @@ export class CampaignsService {
 
   listCampaigns(projectId?: string): Promise<Campaign[]> {
     return this.store.listCampaigns(projectId);
+  }
+
+  async listArtifacts(projectId: string): Promise<ArtifactRecord[]> {
+    await this.getProject(projectId);
+    return this.store.listArtifacts(projectId);
+  }
+
+  async listEvidence(campaignId: string): Promise<EvidenceRecord[]> {
+    await this.getCampaign(campaignId);
+    return this.store.listEvidence(campaignId);
+  }
+
+  async listVerificationReports(campaignId: string): Promise<VerificationReport[]> {
+    await this.getCampaign(campaignId);
+    return this.store.listVerificationReports(campaignId);
+  }
+
+  async listReproducibilityBundles(campaignId: string): Promise<ReproducibilityBundleManifest[]> {
+    await this.getCampaign(campaignId);
+    return this.store.listReproducibilityBundles(campaignId);
   }
 
   async transitionCampaign(
@@ -425,10 +461,17 @@ export class CampaignsService {
       researcher: { type: 'USER', id: 'reference-run-resumer', role: 'RESEARCHER' },
       approval,
     });
-    if (snapshot.campaign.status !== 'DISCOVERY_CANDIDATE' || !snapshot.verificationReport) {
+    if (
+      snapshot.campaign.status !== 'DISCOVERY_CANDIDATE' ||
+      !snapshot.verificationReport ||
+      !snapshot.hypothesis ||
+      !snapshot.plan ||
+      !snapshot.bundle ||
+      snapshot.results.length === 0
+    ) {
       throw new DomainError(
         'WORKER_PROTOCOL_INVALID',
-        'Reference worker did not finish verification',
+        'Reference worker did not return complete scientific lineage',
       );
     }
     const serviceActor: Actor = {
@@ -475,16 +518,154 @@ export class CampaignsService {
       budgetVersion: candidate.budgetVersion + 1,
       updatedAt: new Date().toISOString(),
     });
+    const lineage = await this.persistReferenceLineage(snapshot);
+    await this.appendCampaignEvent(
+      candidate,
+      serviceActor,
+      `${idempotencyKey}:evidence`,
+      'evidence.lineage.recorded',
+      {
+        evidenceIds: lineage.evidenceIds,
+        artifactDigests: lineage.artifactDigests,
+        verificationReportId: snapshot.verificationReport.reportId,
+      },
+    );
     await this.appendCampaignEvent(
       candidate,
       serviceActor,
       `${idempotencyKey}:bundle`,
       'bundle.exported',
       {
+        bundleId: snapshot.bundle.bundleId,
+        manifestDigest: snapshot.bundle.manifestDigest,
         verificationReportId: snapshot.verificationReport.reportId,
         verificationStatus: snapshot.verificationReport.status,
       },
     );
+  }
+
+  private async persistReferenceLineage(snapshot: z.infer<typeof WorkerSnapshotSchema>): Promise<{
+    evidenceIds: string[];
+    artifactDigests: string[];
+  }> {
+    const { campaign, hypothesis, plan, results, verificationReport, bundle, runId } = snapshot;
+    if (!hypothesis || !plan || !verificationReport || !bundle || results.length === 0) {
+      throw new DomainError('WORKER_PROTOCOL_INVALID', 'Scientific lineage is incomplete');
+    }
+
+    const artifacts = results.flatMap((result) => result.artifacts).map((artifact) =>
+      ArtifactReferenceSchema.parse(artifact),
+    );
+    for (const artifact of artifacts) {
+      await this.store.createArtifact({
+        artifact,
+        organizationId: campaign.organizationId,
+        projectId: campaign.projectId,
+        storageKey: `reference-workflow/${campaign.id}/objects/${artifact.digest.slice(7)}`,
+        provenance: {
+          campaignId: campaign.id,
+          runId,
+          targetVersionId: campaign.targetVersionId,
+          modelId: 'reference-local-worker-model-v1',
+          executorId: plan.executorId,
+          imageDigest: plan.imageDigest,
+          imageReference: plan.imageReference,
+          artifactDigest: artifact.digest,
+        },
+        createdAt: bundle.createdAt,
+      });
+    }
+
+    const firstResult = results[0]!;
+    const measurementSummary = firstResult.measurements
+      .map((measurement) => `${measurement.name}=${String(measurement.value)}${measurement.unit ?? ''}`)
+      .join(', ');
+    const evidence = [
+      EvidenceRecordSchema.parse({
+        contractVersion: '1.0',
+        evidenceId: `evi_${runId}_hypothesis`,
+        organizationId: campaign.organizationId,
+        projectId: campaign.projectId,
+        campaignId: campaign.id,
+        runId,
+        targetVersionId: campaign.targetVersionId,
+        type: 'HYPOTHESIS',
+        status: 'PROPOSED',
+        statement: hypothesis.statement,
+        artifacts: [],
+        supportsClaimIds: [],
+        contradictsClaimIds: [],
+        sourcePointers: [`workflow:${snapshot.workflowId}`, `hypothesis:${hypothesis.hypothesisId}`],
+        createdAt: hypothesis.createdAt,
+      }),
+      EvidenceRecordSchema.parse({
+        contractVersion: '1.0',
+        evidenceId: `evi_${runId}_observation`,
+        organizationId: campaign.organizationId,
+        projectId: campaign.projectId,
+        campaignId: campaign.id,
+        runId,
+        targetVersionId: campaign.targetVersionId,
+        type: 'OBSERVATION',
+        status: 'OBSERVED',
+        statement: `Reference experiment completed: ${measurementSummary}.`,
+        artifacts,
+        supportsClaimIds: [],
+        contradictsClaimIds: [],
+        sourcePointers: [
+          `experiment-run:${firstResult.experimentRunId}`,
+          `invocation:${firstResult.invocationId}`,
+        ],
+        createdAt: firstResult.completedAt,
+      }),
+      EvidenceRecordSchema.parse({
+        contractVersion: '1.0',
+        evidenceId: `evi_${runId}_reproducible`,
+        organizationId: campaign.organizationId,
+        projectId: campaign.projectId,
+        campaignId: campaign.id,
+        runId,
+        targetVersionId: campaign.targetVersionId,
+        type: 'REPRODUCIBLE_EVIDENCE',
+        status: 'REPRODUCED',
+        statement: `The deterministic reference result is bound to environment ${firstResult.environmentDigest}.`,
+        artifacts,
+        supportsClaimIds: [],
+        contradictsClaimIds: [],
+        sourcePointers: [
+          `verification-report:${verificationReport.reportId}`,
+          `bundle:${bundle.bundleId}`,
+        ],
+        createdAt: verificationReport.createdAt,
+      }),
+      EvidenceRecordSchema.parse({
+        contractVersion: '1.0',
+        evidenceId: `evi_${runId}_candidate`,
+        organizationId: campaign.organizationId,
+        projectId: campaign.projectId,
+        campaignId: campaign.id,
+        runId,
+        targetVersionId: campaign.targetVersionId,
+        type: 'VERIFIED_DISCOVERY_CANDIDATE',
+        status: 'REPRODUCED',
+        statement: `${hypothesis.statement} Automated policy predicates passed; independent reviewer acceptance remains required.`,
+        artifacts,
+        supportsClaimIds: [],
+        contradictsClaimIds: [],
+        sourcePointers: [
+          `verification-report:${verificationReport.reportId}`,
+          `bundle:${bundle.bundleId}`,
+        ],
+        createdAt: verificationReport.createdAt,
+      }),
+    ];
+    for (const record of evidence) await this.store.createEvidence(record);
+    await this.store.createVerificationReport(verificationReport);
+    await this.store.createReproducibilityBundle(bundle);
+    return {
+      evidenceIds: evidence.map((record) => record.evidenceId),
+      artifactDigests: artifacts.map((artifact) => artifact.digest),
+    };
   }
 
   private async callReferenceWorker(input: unknown): Promise<z.infer<typeof WorkerSnapshotSchema>> {

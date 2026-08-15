@@ -226,7 +226,10 @@ describe('AlphaLab control plane', () => {
           };
           return new Response(
             JSON.stringify({
+              workflowId: `workflow_${input.campaign.id}`,
+              runId: `run_${input.campaign.id}`,
               campaign: { ...input.campaign, status: 'WAITING_FOR_APPROVAL' },
+              results: [],
               proposedAction: workerAction,
             }),
             { status: 200 },
@@ -234,6 +237,8 @@ describe('AlphaLab control plane', () => {
         }
         return new Response(
           JSON.stringify({
+            workflowId: `workflow_${input.campaign.id}`,
+            runId: `run_${input.campaign.id}`,
             campaign: {
               ...input.campaign,
               status: 'DISCOVERY_CANDIDATE',
@@ -246,6 +251,56 @@ describe('AlphaLab control plane', () => {
                 activeChildren: 0,
               },
             },
+            hypothesis: {
+              hypothesisId: 'hyp_reference_worker',
+              campaignId: input.campaign.id,
+              statement: 'The frozen reference sample has a positive mean.',
+              rationale: 'A deterministic reference sample is used.',
+              falsificationCriteria: ['The mean is not positive.'],
+              assumptions: ['The reference sample remains immutable.'],
+              generatedByRequestId: 'req_reference_hypothesis',
+              createdAt: '2026-08-15T00:00:00.000Z',
+            },
+            plan: {
+              planId: 'plan_reference_worker',
+              campaignId: input.campaign.id,
+              hypothesisId: 'hyp_reference_worker',
+              version: 1,
+              objective: 'Compute reference summary statistics.',
+              executorId: 'reference-local-executor-v1',
+              imageReference: `alphalab/reference-summary@sha256:${'b'.repeat(64)}`,
+              imageDigest: `sha256:${'b'.repeat(64)}`,
+              command: ['alphalab-reference-summary'],
+              parameters: { values: [2, 4, 6, 8], seed: 7 },
+              expectedMeasurements: ['mean'],
+              successPredicates: ['mean > 0'],
+              estimatedComputeMilliUnits: 100,
+              estimatedWallClockSeconds: 60,
+              requiresNetwork: false,
+              createdAt: '2026-08-15T00:00:00.000Z',
+            },
+            results: [
+              {
+                resultId: 'result_reference_worker',
+                experimentRunId: 'experiment_run_reference_worker',
+                invocationId: 'invocation_reference_worker',
+                status: 'SUCCEEDED',
+                measurements: [{ name: 'mean', value: 5 }],
+                artifacts: [
+                  {
+                    artifactId: 'artifact_reference_worker',
+                    digest: `sha256:${'c'.repeat(64)}`,
+                    mediaType: 'application/json',
+                    sizeBytes: 42,
+                  },
+                ],
+                normalizedResultDigest: `sha256:${'d'.repeat(64)}`,
+                environmentDigest: `sha256:${'e'.repeat(64)}`,
+                startedAt: '2026-08-15T00:00:00.000Z',
+                completedAt: '2026-08-15T00:00:01.000Z',
+                exitCode: 0,
+              },
+            ],
             verificationReport: {
               contractVersion: '1.0',
               reportId: 'vrf_reference_worker',
@@ -265,6 +320,41 @@ describe('AlphaLab control plane', () => {
               candidateEligible: true,
               humanApprovalRequired: true,
               createdAt: '2026-08-15T00:00:00.000Z',
+            },
+            bundle: {
+              contractVersion: '1.0',
+              bundleId: 'bundle_reference_worker',
+              bundleVersion: 1,
+              organizationId: input.campaign.organizationId,
+              projectId: input.campaign.projectId,
+              campaignId: input.campaign.id,
+              targetVersionId: input.campaign.targetVersionId,
+              createdAt: '2026-08-15T00:00:01.000Z',
+              createdBy: 'reference-workflow-worker',
+              artifacts: [
+                {
+                  artifactId: 'artifact_reference_worker',
+                  digest: `sha256:${'c'.repeat(64)}`,
+                  mediaType: 'application/json',
+                  sizeBytes: 42,
+                },
+              ],
+              files: [
+                {
+                  path: 'artifacts/artifact_reference_worker',
+                  digest: `sha256:${'c'.repeat(64)}`,
+                  sizeBytes: 42,
+                },
+              ],
+              invocation: {
+                imageReference: `alphalab/reference-summary@sha256:${'b'.repeat(64)}`,
+                imageDigest: `sha256:${'b'.repeat(64)}`,
+                command: ['alphalab-reference-summary'],
+                parameters: { values: [2, 4, 6, 8], seed: 7 },
+                seeds: [7],
+              },
+              normalizedResultDigest: `sha256:${'d'.repeat(64)}`,
+              manifestDigest: `sha256:${'f'.repeat(64)}`,
             },
           }),
           { status: 200 },
@@ -355,5 +445,31 @@ describe('AlphaLab control plane', () => {
       status: 'DISCOVERY_CANDIDATE',
       budgetUsage: { experiments: 1, modelCalls: 2 },
     });
+    const evidence = await request(app.getHttpServer())
+      .get(`/v1/campaigns/${campaign.body.id}/evidence`)
+      .expect(200);
+    const reports = await request(app.getHttpServer())
+      .get(`/v1/campaigns/${campaign.body.id}/verification-reports`)
+      .expect(200);
+    const bundles = await request(app.getHttpServer())
+      .get(`/v1/campaigns/${campaign.body.id}/reproducibility-bundles`)
+      .expect(200);
+    const artifacts = await request(app.getHttpServer())
+      .get(`/v1/projects/${project.body.id}/artifacts`)
+      .expect(200);
+    expect(evidence.body).toHaveLength(4);
+    expect(evidence.body.map((record: { type: string }) => record.type)).toEqual(
+      expect.arrayContaining([
+        'HYPOTHESIS',
+        'OBSERVATION',
+        'REPRODUCIBLE_EVIDENCE',
+        'VERIFIED_DISCOVERY_CANDIDATE',
+      ]),
+    );
+    expect(reports.body).toMatchObject([{ reportId: 'vrf_reference_worker', status: 'VERIFIED' }]);
+    expect(bundles.body).toMatchObject([{ bundleId: 'bundle_reference_worker' }]);
+    expect(artifacts.body).toMatchObject([
+      { artifact: { digest: `sha256:${'c'.repeat(64)}` }, projectId: project.body.id },
+    ]);
   });
 });

@@ -128,6 +128,30 @@ export class CampaignsController {
     return this.campaigns.listEvents(id);
   }
 
+  @Get('projects/:id/artifacts')
+  @Version('1')
+  listArtifacts(@Param('id') id: string) {
+    return this.campaigns.listArtifacts(id);
+  }
+
+  @Get('campaigns/:id/evidence')
+  @Version('1')
+  listEvidence(@Param('id') id: string) {
+    return this.campaigns.listEvidence(id);
+  }
+
+  @Get('campaigns/:id/verification-reports')
+  @Version('1')
+  listVerificationReports(@Param('id') id: string) {
+    return this.campaigns.listVerificationReports(id);
+  }
+
+  @Get('campaigns/:id/reproducibility-bundles')
+  @Version('1')
+  listReproducibilityBundles(@Param('id') id: string) {
+    return this.campaigns.listReproducibilityBundles(id);
+  }
+
   @Sse('campaigns/:id/stream')
   @Version('1')
   async streamEvents(@Param('id') id: string): Promise<Observable<MessageEvent>> {

@@ -1,9 +1,13 @@
 import type {
   ApprovalRequestRecord,
+  ArtifactRecord,
   CampaignRecord,
   DomainEvent,
+  EvidenceRecord,
   ProjectRecord,
+  ReproducibilityBundleManifest,
   TargetVersion,
+  VerificationReport,
 } from './types';
 
 const API_ROOT = '/api/control';
@@ -68,6 +72,14 @@ export const controlApi = {
     ),
   campaign: (campaignId: string) => request<CampaignRecord>(`/campaigns/${campaignId}`),
   events: (campaignId: string) => request<DomainEvent[]>(`/campaigns/${campaignId}/events`),
+  artifacts: (projectId: string) => request<ArtifactRecord[]>(`/projects/${projectId}/artifacts`),
+  evidence: (campaignId: string) => request<EvidenceRecord[]>(`/campaigns/${campaignId}/evidence`),
+  verificationReports: (campaignId: string) =>
+    request<VerificationReport[]>(`/campaigns/${campaignId}/verification-reports`),
+  reproducibilityBundles: (campaignId: string) =>
+    request<ReproducibilityBundleManifest[]>(
+      `/campaigns/${campaignId}/reproducibility-bundles`,
+    ),
   approvals: (campaignId?: string) =>
     request<ApprovalRequestRecord[]>(
       `/approval-requests${campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : ''}`,

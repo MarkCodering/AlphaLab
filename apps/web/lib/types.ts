@@ -1,11 +1,15 @@
 import type {
   ApprovalArtifact,
+  ArtifactReference,
   BudgetLimit,
   BudgetUsage,
   CampaignStatus,
   DomainEvent,
+  EvidenceRecord,
   ProposedAction,
+  ReproducibilityBundleManifest,
   TargetVersion,
+  VerificationReport,
 } from '@alphalab/contracts';
 
 export interface ProjectRecord {
@@ -41,4 +45,19 @@ export interface ApprovalRequestRecord {
   approval?: ApprovalArtifact;
 }
 
-export type { DomainEvent, TargetVersion };
+export interface ArtifactRecord {
+  artifact: ArtifactReference;
+  organizationId: string;
+  projectId: string;
+  storageKey: string;
+  provenance: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type {
+  DomainEvent,
+  EvidenceRecord,
+  ReproducibilityBundleManifest,
+  TargetVersion,
+  VerificationReport,
+};

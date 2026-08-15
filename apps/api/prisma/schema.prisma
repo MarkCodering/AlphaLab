@@ -130,20 +130,55 @@ model Artifact {
 }
 
 model EvidenceRecord {
-  id             String   @id
-  organizationId String   @map("organization_id")
-  projectId      String   @map("project_id")
-  campaignId     String   @map("campaign_id")
-  classification String
-  statement      String
-  artifactDigests String[] @map("artifact_digests")
-  provenance     Json
-  status         String
-  invalidatesId  String?  @map("invalidates_id")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                   String   @id
+  organizationId       String   @map("organization_id")
+  projectId            String   @map("project_id")
+  campaignId           String   @map("campaign_id")
+  runId                String   @map("run_id")
+  targetVersionId      String   @map("target_version_id")
+  classification       String
+  statement            String
+  artifactDigests      String[] @map("artifact_digests")
+  supportsClaimIds     String[] @map("supports_claim_ids")
+  contradictsClaimIds  String[] @map("contradicts_claim_ids")
+  sourcePointers       String[] @map("source_pointers")
+  provenance           Json
+  status               String
+  invalidatesId        String?  @map("invalidates_id")
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([campaignId, classification])
   @@map("evidence_records")
+}
+
+model VerificationReport {
+  id                    String   @id
+  organizationId        String   @map("organization_id")
+  projectId             String   @map("project_id")
+  campaignId            String   @map("campaign_id")
+  policyVersion         String   @map("policy_version")
+  status                String
+  predicateResults      Json     @map("predicate_results")
+  candidateEligible     Boolean  @map("candidate_eligible")
+  humanApprovalRequired Boolean  @map("human_approval_required")
+  createdAt             DateTime @map("created_at") @db.Timestamptz(6)
+
+  @@index([campaignId, createdAt])
+  @@map("verification_reports")
+}
+
+model ReproducibilityBundle {
+  id              String   @id
+  organizationId  String   @map("organization_id")
+  projectId       String   @map("project_id")
+  campaignId      String   @map("campaign_id")
+  targetVersionId String   @map("target_version_id")
+  manifest        Json
+  manifestDigest  String?  @map("manifest_digest")
+  createdAt       DateTime @map("created_at") @db.Timestamptz(6)
+
+  @@index([campaignId, createdAt])
+  @@map("reproducibility_bundles")
 }
 
 model OutboxEvent {

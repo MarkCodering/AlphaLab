@@ -2,11 +2,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type {
   ApprovalArtifact,
+  ArtifactReference,
   Campaign,
   DomainEvent,
   ProposedAction,
+  ReproducibilityBundleManifest,
   TargetVersion,
+  VerificationReport,
 } from '@alphalab/contracts';
+import type { EvidenceRecord } from '@alphalab/contracts';
 import { DomainError } from '@alphalab/domain';
 
 export const CONTROL_STORE = Symbol('CONTROL_STORE');
@@ -27,6 +31,15 @@ export interface ApprovalRequestRecord {
   status: 'PENDING' | 'DECIDED';
   createdAt: string;
   approval?: ApprovalArtifact;
+}
+
+export interface ArtifactRecord {
+  artifact: ArtifactReference;
+  organizationId: string;
+  projectId: string;
+  storageKey: string;
+  provenance: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface ControlStore {
@@ -51,6 +64,14 @@ export interface ControlStore {
   getApprovalRequest(id: string): Promise<ApprovalRequestRecord | undefined>;
   listApprovalRequests(campaignId?: string): Promise<ApprovalRequestRecord[]>;
   updateApprovalRequest(record: ApprovalRequestRecord): Promise<void>;
+  createArtifact(record: ArtifactRecord): Promise<void>;
+  listArtifacts(projectId: string): Promise<ArtifactRecord[]>;
+  createEvidence(record: EvidenceRecord): Promise<void>;
+  listEvidence(campaignId: string): Promise<EvidenceRecord[]>;
+  createVerificationReport(report: VerificationReport): Promise<void>;
+  listVerificationReports(campaignId: string): Promise<VerificationReport[]>;
+  createReproducibilityBundle(bundle: ReproducibilityBundleManifest): Promise<void>;
+  listReproducibilityBundles(campaignId: string): Promise<ReproducibilityBundleManifest[]>;
   listEvents(campaignId: string): Promise<DomainEvent[]>;
   appendEvent(event: DomainEvent): Promise<void>;
   nextId(prefix: string): string;
@@ -62,6 +83,10 @@ export class InMemoryControlStore implements ControlStore {
   private readonly targets = new Map<string, TargetVersion>();
   private readonly campaigns = new Map<string, Campaign>();
   private readonly approvalRequests = new Map<string, ApprovalRequestRecord>();
+  private readonly artifacts = new Map<string, ArtifactRecord>();
+  private readonly evidence = new Map<string, EvidenceRecord>();
+  private readonly verificationReports = new Map<string, VerificationReport>();
+  private readonly reproducibilityBundles = new Map<string, ReproducibilityBundleManifest>();
   private readonly events: DomainEvent[] = [];
   private readonly idempotencyRecords = new Map<
     string,
@@ -158,6 +183,62 @@ export class InMemoryControlStore implements ControlStore {
 
   async updateApprovalRequest(record: ApprovalRequestRecord): Promise<void> {
     this.approvalRequests.set(record.id, record);
+  }
+
+  async createArtifact(record: ArtifactRecord): Promise<void> {
+    const existing = this.artifacts.get(record.artifact.digest);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(record)) {
+      throw new DomainError('ARTIFACT_IMMUTABLE', `Artifact ${record.artifact.digest} already exists`);
+    }
+    this.artifacts.set(record.artifact.digest, record);
+  }
+
+  async listArtifacts(projectId: string): Promise<ArtifactRecord[]> {
+    return [...this.artifacts.values()]
+      .filter((record) => record.projectId === projectId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async createEvidence(record: EvidenceRecord): Promise<void> {
+    const existing = this.evidence.get(record.evidenceId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(record)) {
+      throw new DomainError('EVIDENCE_IMMUTABLE', `Evidence ${record.evidenceId} already exists`);
+    }
+    this.evidence.set(record.evidenceId, record);
+  }
+
+  async listEvidence(campaignId: string): Promise<EvidenceRecord[]> {
+    return [...this.evidence.values()]
+      .filter((record) => record.campaignId === campaignId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async createVerificationReport(report: VerificationReport): Promise<void> {
+    const existing = this.verificationReports.get(report.reportId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(report)) {
+      throw new DomainError('VERIFICATION_REPORT_IMMUTABLE', `Report ${report.reportId} already exists`);
+    }
+    this.verificationReports.set(report.reportId, report);
+  }
+
+  async listVerificationReports(campaignId: string): Promise<VerificationReport[]> {
+    return [...this.verificationReports.values()]
+      .filter((report) => report.campaignId === campaignId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async createReproducibilityBundle(bundle: ReproducibilityBundleManifest): Promise<void> {
+    const existing = this.reproducibilityBundles.get(bundle.bundleId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(bundle)) {
+      throw new DomainError('BUNDLE_IMMUTABLE', `Bundle ${bundle.bundleId} already exists`);
+    }
+    this.reproducibilityBundles.set(bundle.bundleId, bundle);
+  }
+
+  async listReproducibilityBundles(campaignId: string): Promise<ReproducibilityBundleManifest[]> {
+    return [...this.reproducibilityBundles.values()]
+      .filter((bundle) => bundle.campaignId === campaignId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   async listEvents(campaignId: string): Promise<DomainEvent[]> {
