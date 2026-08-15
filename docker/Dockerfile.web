@@ -2,6 +2,10 @@ FROM node:22.22.0-bookworm-slim AS build
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 ENV ALPHALAB_API_ORIGIN=http://api:4310
+ENV ALPHALAB_WORKER_ORIGIN=http://worker:4311
+ENV ALPHALAB_MODEL_ORIGIN=http://model-runtime:8100
+ENV ALPHALAB_EXPERIMENT_ORIGIN=http://experiment-runner:8101
+ENV ALPHALAB_VERIFIER_ORIGIN=http://verifier-runtime:8102
 RUN corepack enable
 WORKDIR /workspace
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./

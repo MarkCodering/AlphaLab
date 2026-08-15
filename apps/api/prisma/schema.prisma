@@ -1,0 +1,159 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  engineType          = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Project {
+  id             String   @id
+  organizationId String   @map("organization_id")
+  name           String
+  description    String   @default("")
+  createdAt      DateTime @map("created_at") @db.Timestamptz(6)
+  createdBy      String   @map("created_by")
+
+  @@index([organizationId])
+  @@map("projects")
+}
+
+model TargetVersion {
+  id                   String   @id
+  organizationId       String   @map("organization_id")
+  projectId            String   @map("project_id")
+  targetId             String   @map("target_id")
+  version              Int
+  scientificGoal       String   @map("scientific_goal")
+  researchQuestion     String   @map("research_question")
+  acceptanceCriteria   String[] @map("acceptance_criteria")
+  verificationPolicyId String   @map("verification_policy_id")
+  stopConditions       String[] @map("stop_conditions")
+  createdAt            DateTime @map("created_at") @db.Timestamptz(6)
+  createdBy            String   @map("created_by")
+
+  @@unique([targetId, version])
+  @@index([projectId])
+  @@map("target_versions")
+}
+
+model Campaign {
+  id              String   @id
+  organizationId  String   @map("organization_id")
+  projectId       String   @map("project_id")
+  targetVersionId String   @map("target_version_id")
+  status          String
+  resumeStatus    String?  @map("resume_status")
+  stateVersion    Int      @map("state_version")
+  budgetVersion   Int      @map("budget_version")
+  budgetLimit     Json     @map("budget_limit")
+  budgetUsage     Json     @map("budget_usage")
+  createdAt       DateTime @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @map("updated_at") @db.Timestamptz(6)
+
+  @@index([projectId, status])
+  @@map("campaigns")
+}
+
+model DomainEvent {
+  eventId         String   @id @map("event_id")
+  contractVersion String   @map("contract_version")
+  eventType       String   @map("event_type")
+  organizationId  String   @map("organization_id")
+  projectId       String   @map("project_id")
+  campaignId      String?  @map("campaign_id")
+  targetVersionId String?  @map("target_version_id")
+  correlationId   String   @map("correlation_id")
+  causationId     String   @map("causation_id")
+  idempotencyKey  String   @map("idempotency_key")
+  actor           Json
+  occurredAt      DateTime @map("occurred_at") @db.Timestamptz(6)
+  payload         Json
+
+  @@index([campaignId, occurredAt])
+  @@map("domain_events")
+}
+
+model IdempotencyRecord {
+  scope         String   @id
+  requestDigest String   @map("request_digest")
+  responseBody  Json     @map("response_body")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("idempotency_records")
+}
+
+model ApprovalRequest {
+  id           String   @id
+  campaignId   String?  @map("campaign_id")
+  action       Json
+  actionDigest String   @map("action_digest")
+  status       String
+  approval     Json?
+  createdAt    DateTime @map("created_at") @db.Timestamptz(6)
+
+  @@index([campaignId, status])
+  @@map("approval_requests")
+}
+
+model SideEffectReceipt {
+  invocationId   String   @id @map("invocation_id")
+  campaignId     String   @map("campaign_id")
+  kind           String
+  requestDigest  String   @map("request_digest")
+  status         String
+  resultReference Json?   @map("result_reference")
+  usage          Json?
+  startedAt      DateTime @map("started_at") @db.Timestamptz(6)
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  @@index([campaignId, kind])
+  @@map("side_effect_receipts")
+}
+
+model Artifact {
+  digest         String   @id
+  organizationId String   @map("organization_id")
+  projectId      String   @map("project_id")
+  mediaType      String   @map("media_type")
+  byteLength     BigInt   @map("byte_length")
+  storageKey     String   @map("storage_key")
+  provenance     Json
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([projectId])
+  @@map("artifacts")
+}
+
+model EvidenceRecord {
+  id             String   @id
+  organizationId String   @map("organization_id")
+  projectId      String   @map("project_id")
+  campaignId     String   @map("campaign_id")
+  classification String
+  statement      String
+  artifactDigests String[] @map("artifact_digests")
+  provenance     Json
+  status         String
+  invalidatesId  String?  @map("invalidates_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([campaignId, classification])
+  @@map("evidence_records")
+}
+
+model OutboxEvent {
+  id          String   @id
+  aggregateId String   @map("aggregate_id")
+  eventType   String   @map("event_type")
+  payload     Json
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_events")
+}

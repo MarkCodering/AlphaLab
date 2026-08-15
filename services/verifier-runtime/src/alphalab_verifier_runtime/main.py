@@ -56,7 +56,9 @@ def verify(request: VerificationRequest) -> VerificationResult:
     digests = {run.normalizedResultDigest for run in successful if run.normalizedResultDigest}
     enough_runs = len(successful) >= request.requiredReproductions
     identical = enough_runs and len(digests) == 1
-    artifacts_complete = enough_runs and all(run.artifactDigests for run in successful)
+    artifacts_complete = enough_runs and (
+        not request.requireArtifacts or all(run.artifactDigests for run in successful)
+    )
     predicates = [
         Predicate(
             name="reproduction_count",

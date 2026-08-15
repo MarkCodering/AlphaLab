@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ToolInvocationSchema, ToolManifestSchema, authorizeToolInvocation } from './index';
+import { ToolInvocationSchema, ToolManifestSchema, authorizeToolInvocation } from './index.js';
 
 const manifest = ToolManifestSchema.parse({
   contractVersion: '1.0',

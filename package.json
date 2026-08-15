@@ -20,6 +20,7 @@
     "clean": "pnpm -r --if-present clean",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
+    "infra:validate": "bash infra/terraform/validate.sh",
     "test": "pnpm -r --if-present test",
     "test:python": "uv run --project services/model-runtime --extra test pytest -q services/model-runtime/tests && uv run --project services/experiment-runner --extra test pytest -q services/experiment-runner/tests && uv run --project services/verifier-runtime --extra test pytest -q services/verifier-runtime/tests",
     "typecheck": "pnpm -r --if-present typecheck"

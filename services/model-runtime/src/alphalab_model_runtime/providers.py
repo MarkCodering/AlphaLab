@@ -32,6 +32,15 @@ class DeterministicStatisticsProvider:
 
     def infer(self, request: DomainInferenceRequest) -> DomainInferenceResult:
         values = request.values
+        if any(not math.isfinite(value) for value in values):
+            return DomainInferenceResult(
+                requestId=request.requestId,
+                status="FAILED",
+                providerId=self.manifest.providerId,
+                modelId=request.modelId,
+                modelRevisionDigest=self.manifest.revisionDigest,
+                errorCode="NON_FINITE_INPUT",
+            )
         output = {
             "count": len(values),
             "mean": fmean(values),
@@ -42,15 +51,6 @@ class DeterministicStatisticsProvider:
         }
         normalized = json.dumps(output, sort_keys=True, separators=(",", ":"))
         output["normalizedDigest"] = f"sha256:{hashlib.sha256(normalized.encode()).hexdigest()}"
-        if any(not math.isfinite(value) for value in values):
-            return DomainInferenceResult(
-                requestId=request.requestId,
-                status="FAILED",
-                providerId=self.manifest.providerId,
-                modelId=request.modelId,
-                modelRevisionDigest=self.manifest.revisionDigest,
-                errorCode="NON_FINITE_INPUT",
-            )
         return DomainInferenceResult(
             requestId=request.requestId,
             status="SUCCEEDED",

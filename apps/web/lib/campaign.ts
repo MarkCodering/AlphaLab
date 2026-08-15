@@ -15,12 +15,12 @@ const activeStatuses = new Set([
   'VERIFYING',
 ]);
 
-export function campaignTone(status: CampaignRecord['status']): 'active' | 'warn' | 'done' | 'idle' {
+export function campaignTone(
+  status: CampaignRecord['status'],
+): 'active' | 'warn' | 'done' | 'idle' {
   if (activeStatuses.has(status)) return 'active';
   if (['VERIFIED', 'DISCOVERY_CANDIDATE'].includes(status)) return 'done';
-  if (
-    ['WAITING_FOR_APPROVAL', 'NEEDS_HUMAN', 'BLOCKED', 'UNSAFE', 'FAILED'].includes(status)
-  )
+  if (['WAITING_FOR_APPROVAL', 'NEEDS_HUMAN', 'BLOCKED', 'UNSAFE', 'FAILED'].includes(status))
     return 'warn';
   return 'idle';
 }

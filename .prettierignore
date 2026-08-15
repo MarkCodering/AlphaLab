@@ -1,5 +1,9 @@
 node_modules
 dist
-.next
+.next*
+.venv
+.pytest_cache
+**/.pytest_cache
+apps/api/src/generated/prisma
 coverage
 pnpm-lock.yaml

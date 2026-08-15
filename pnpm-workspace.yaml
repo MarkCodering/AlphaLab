@@ -4,5 +4,7 @@ packages:
   - services/*
 
 allowBuilds:
+  '@prisma/engines': true
   '@scarf/scarf': false
-  esbuild: set this to true or false
+  esbuild: false
+  prisma: true

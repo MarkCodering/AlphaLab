@@ -30,49 +30,107 @@ export interface ApprovalRequestRecord {
 }
 
 export interface ControlStore {
-  projects: Map<string, ProjectRecord>;
-  targets: Map<string, TargetVersion>;
-  campaigns: Map<string, Campaign>;
-  approvalRequests: Map<string, ApprovalRequestRecord>;
-  events: DomainEvent[];
-  eventEmitter: EventEmitter;
-  idempotent<T>(scope: string, key: string, request: unknown, operation: () => T): T;
-  updateCampaign(id: string, expectedVersion: number, campaign: Campaign): void;
-  appendEvent(event: DomainEvent): void;
+  readonly eventEmitter: EventEmitter;
+  idempotent<T>(
+    scope: string,
+    key: string,
+    request: unknown,
+    operation: () => Promise<T>,
+  ): Promise<T>;
+  createProject(record: ProjectRecord): Promise<void>;
+  getProject(id: string): Promise<ProjectRecord | undefined>;
+  listProjects(organizationId?: string): Promise<ProjectRecord[]>;
+  createTarget(record: TargetVersion): Promise<void>;
+  getTarget(id: string): Promise<TargetVersion | undefined>;
+  listTargets(projectId?: string, targetId?: string): Promise<TargetVersion[]>;
+  createCampaign(record: Campaign): Promise<void>;
+  getCampaign(id: string): Promise<Campaign | undefined>;
+  listCampaigns(projectId?: string): Promise<Campaign[]>;
+  updateCampaign(id: string, expectedVersion: number, campaign: Campaign): Promise<void>;
+  createApprovalRequest(record: ApprovalRequestRecord): Promise<void>;
+  getApprovalRequest(id: string): Promise<ApprovalRequestRecord | undefined>;
+  listApprovalRequests(campaignId?: string): Promise<ApprovalRequestRecord[]>;
+  updateApprovalRequest(record: ApprovalRequestRecord): Promise<void>;
+  listEvents(campaignId: string): Promise<DomainEvent[]>;
+  appendEvent(event: DomainEvent): Promise<void>;
   nextId(prefix: string): string;
 }
 
 export class InMemoryControlStore implements ControlStore {
-  readonly projects = new Map<string, ProjectRecord>();
-  readonly targets = new Map<string, TargetVersion>();
-  readonly campaigns = new Map<string, Campaign>();
-  readonly approvalRequests = new Map<string, ApprovalRequestRecord>();
-  readonly events: DomainEvent[] = [];
   readonly eventEmitter = new EventEmitter();
+  private readonly projects = new Map<string, ProjectRecord>();
+  private readonly targets = new Map<string, TargetVersion>();
+  private readonly campaigns = new Map<string, Campaign>();
+  private readonly approvalRequests = new Map<string, ApprovalRequestRecord>();
+  private readonly events: DomainEvent[] = [];
   private readonly idempotencyRecords = new Map<
     string,
     { requestDigest: string; result: unknown }
   >();
 
-  idempotent<T>(scope: string, key: string, request: unknown, operation: () => T): T {
+  async idempotent<T>(
+    scope: string,
+    key: string,
+    request: unknown,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const recordKey = `${scope}:${key}`;
-    const requestDigest = createHash('sha256').update(canonicalize(request)).digest('hex');
+    const requestDigest = digestRequest(request);
     const existing = this.idempotencyRecords.get(recordKey);
     if (existing) {
-      if (existing.requestDigest !== requestDigest) {
-        throw new DomainError(
-          'IDEMPOTENCY_CONFLICT',
-          'The idempotency key was already used for a different request',
-        );
-      }
+      assertMatchingRequest(existing.requestDigest, requestDigest);
       return existing.result as T;
     }
-    const result = operation();
+    const result = await operation();
     this.idempotencyRecords.set(recordKey, { requestDigest, result });
     return result;
   }
 
-  updateCampaign(id: string, expectedVersion: number, campaign: Campaign): void {
+  async createProject(record: ProjectRecord): Promise<void> {
+    this.projects.set(record.id, record);
+  }
+
+  async getProject(id: string): Promise<ProjectRecord | undefined> {
+    return this.projects.get(id);
+  }
+
+  async listProjects(organizationId?: string): Promise<ProjectRecord[]> {
+    return [...this.projects.values()].filter(
+      (project) => !organizationId || project.organizationId === organizationId,
+    );
+  }
+
+  async createTarget(record: TargetVersion): Promise<void> {
+    this.targets.set(record.id, record);
+  }
+
+  async getTarget(id: string): Promise<TargetVersion | undefined> {
+    return this.targets.get(id);
+  }
+
+  async listTargets(projectId?: string, targetId?: string): Promise<TargetVersion[]> {
+    return [...this.targets.values()].filter(
+      (target) =>
+        (!projectId || target.projectId === projectId) &&
+        (!targetId || target.targetId === targetId),
+    );
+  }
+
+  async createCampaign(record: Campaign): Promise<void> {
+    this.campaigns.set(record.id, record);
+  }
+
+  async getCampaign(id: string): Promise<Campaign | undefined> {
+    return this.campaigns.get(id);
+  }
+
+  async listCampaigns(projectId?: string): Promise<Campaign[]> {
+    return [...this.campaigns.values()].filter(
+      (campaign) => !projectId || campaign.projectId === projectId,
+    );
+  }
+
+  async updateCampaign(id: string, expectedVersion: number, campaign: Campaign): Promise<void> {
     const current = this.campaigns.get(id);
     if (!current) throw new DomainError('CAMPAIGN_NOT_FOUND', `Campaign ${id} was not found`);
     if (current.stateVersion !== expectedVersion) {
@@ -84,13 +142,48 @@ export class InMemoryControlStore implements ControlStore {
     this.campaigns.set(id, campaign);
   }
 
-  appendEvent(event: DomainEvent): void {
+  async createApprovalRequest(record: ApprovalRequestRecord): Promise<void> {
+    this.approvalRequests.set(record.id, record);
+  }
+
+  async getApprovalRequest(id: string): Promise<ApprovalRequestRecord | undefined> {
+    return this.approvalRequests.get(id);
+  }
+
+  async listApprovalRequests(campaignId?: string): Promise<ApprovalRequestRecord[]> {
+    return [...this.approvalRequests.values()].filter(
+      (request) => !campaignId || request.action.campaignId === campaignId,
+    );
+  }
+
+  async updateApprovalRequest(record: ApprovalRequestRecord): Promise<void> {
+    this.approvalRequests.set(record.id, record);
+  }
+
+  async listEvents(campaignId: string): Promise<DomainEvent[]> {
+    return this.events.filter((event) => event.campaignId === campaignId);
+  }
+
+  async appendEvent(event: DomainEvent): Promise<void> {
     this.events.push(event);
     this.eventEmitter.emit('domain-event', event);
   }
 
   nextId(prefix: string): string {
     return `${prefix}_${randomUUID()}`;
+  }
+}
+
+export function digestRequest(request: unknown): string {
+  return createHash('sha256').update(canonicalize(request)).digest('hex');
+}
+
+export function assertMatchingRequest(existing: string, candidate: string): void {
+  if (existing !== candidate) {
+    throw new DomainError(
+      'IDEMPOTENCY_CONFLICT',
+      'The idempotency key was already used for a different request',
+    );
   }
 }
 

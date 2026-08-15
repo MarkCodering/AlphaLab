@@ -39,8 +39,26 @@ function mutationHeaders(extra?: HeadersInit): HeadersInit {
   return { 'idempotency-key': crypto.randomUUID(), ...extra };
 }
 
+async function isHealthy(path: string): Promise<boolean> {
+  try {
+    const response = await fetch(path, { cache: 'no-store' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export const controlApi = {
   health: () => request<{ status: string; service: string; contractVersion: string }>('/health'),
+  runtimeHealth: async () => {
+    const [worker, model, experiment, verifier] = await Promise.all([
+      isHealthy('/api/runtime/worker/health'),
+      isHealthy('/api/runtime/model/health'),
+      isHealthy('/api/runtime/experiment/health'),
+      isHealthy('/api/runtime/verifier/health'),
+    ]);
+    return { worker, model, experiment, verifier };
+  },
   projects: () => request<ProjectRecord[]>('/projects'),
   targets: (projectId: string) =>
     request<TargetVersion[]>(`/targets?projectId=${encodeURIComponent(projectId)}`),

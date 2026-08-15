@@ -59,9 +59,13 @@ const environment = {
   ALPHALAB_NEXT_DIST_DIR: `.next-local-${ports.web}`,
   ALPHALAB_WORKER_PORT: String(ports.worker),
   ALPHALAB_WORKER_HOST: host,
+  ALPHALAB_WORKER_ORIGIN: `http://${host}:${ports.worker}`,
   ALPHALAB_MODEL_PORT: String(ports.model),
+  ALPHALAB_MODEL_ORIGIN: `http://${host}:${ports.model}`,
   ALPHALAB_EXPERIMENT_PORT: String(ports.experiment),
+  ALPHALAB_EXPERIMENT_ORIGIN: `http://${host}:${ports.experiment}`,
   ALPHALAB_VERIFIER_PORT: String(ports.verifier),
+  ALPHALAB_VERIFIER_ORIGIN: `http://${host}:${ports.verifier}`,
 };
 
 process.stdout.write(

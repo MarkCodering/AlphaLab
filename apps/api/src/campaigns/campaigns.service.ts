@@ -10,9 +10,7 @@ import {
   type Actor,
   type ApprovalArtifact,
   type Campaign,
-  type CampaignStatus,
   type DomainEvent,
-  type ProposedAction,
   type TargetVersion,
 } from '@alphalab/contracts';
 import { DomainError, emptyBudgetUsage, transitionCampaign } from '@alphalab/domain';
@@ -68,25 +66,23 @@ const ApprovalDecisionSchema = z.object({
 export class CampaignsService {
   constructor(@Inject(CONTROL_STORE) private readonly store: ControlStore) {}
 
-  getProject(id: string): ProjectRecord {
-    const project = this.store.projects.get(id);
+  async getProject(id: string): Promise<ProjectRecord> {
+    const project = await this.store.getProject(id);
     if (!project) throw new DomainError('PROJECT_NOT_FOUND', `Project ${id} was not found`);
     return project;
   }
 
-  listProjects(organizationId?: string): ProjectRecord[] {
-    return [...this.store.projects.values()].filter(
-      (project) => !organizationId || project.organizationId === organizationId,
-    );
+  listProjects(organizationId?: string): Promise<ProjectRecord[]> {
+    return this.store.listProjects(organizationId);
   }
 
-  createProject(body: unknown, actor: Actor, idempotencyKey: string): ProjectRecord {
+  async createProject(body: unknown, actor: Actor, idempotencyKey: string): Promise<ProjectRecord> {
     const input = CreateProjectSchema.parse(body);
     return this.store.idempotent(
       `project:create:${input.organizationId}:${actor.id}`,
       idempotencyKey,
       input,
-      () => {
+      async () => {
         const record: ProjectRecord = {
           id: this.store.nextId('prj'),
           organizationId: input.organizationId,
@@ -95,24 +91,22 @@ export class CampaignsService {
           createdAt: new Date().toISOString(),
           createdBy: actor.id,
         };
-        this.store.projects.set(record.id, record);
+        await this.store.createProject(record);
         return record;
       },
     );
   }
 
-  createTarget(body: unknown, actor: Actor, idempotencyKey: string): TargetVersion {
+  async createTarget(body: unknown, actor: Actor, idempotencyKey: string): Promise<TargetVersion> {
     const input = CreateTargetSchema.parse(body);
-    this.requireProject(input.projectId, input.organizationId);
+    await this.requireProject(input.projectId, input.organizationId);
     return this.store.idempotent(
       `target:create:${input.organizationId}:${input.projectId}:${actor.id}`,
       idempotencyKey,
       input,
-      () => {
+      async () => {
         const targetId = input.targetId ?? this.store.nextId('tgt');
-        const priorVersions = [...this.store.targets.values()].filter(
-          (target) => target.targetId === targetId,
-        );
+        const priorVersions = await this.store.listTargets(undefined, targetId);
         const record = TargetVersionSchema.parse({
           ...input,
           id: this.store.nextId('tgv'),
@@ -121,22 +115,20 @@ export class CampaignsService {
           createdAt: new Date().toISOString(),
           createdBy: actor.id,
         });
-        this.store.targets.set(record.id, record);
+        await this.store.createTarget(record);
         return record;
       },
     );
   }
 
-  listTargets(projectId?: string): TargetVersion[] {
-    return [...this.store.targets.values()].filter(
-      (target) => !projectId || target.projectId === projectId,
-    );
+  listTargets(projectId?: string): Promise<TargetVersion[]> {
+    return this.store.listTargets(projectId);
   }
 
-  createCampaign(body: unknown, actor: Actor, idempotencyKey: string): Campaign {
+  async createCampaign(body: unknown, actor: Actor, idempotencyKey: string): Promise<Campaign> {
     const input = CreateCampaignSchema.parse(body);
-    this.requireProject(input.projectId, input.organizationId);
-    const target = this.store.targets.get(input.targetVersionId);
+    await this.requireProject(input.projectId, input.organizationId);
+    const target = await this.store.getTarget(input.targetVersionId);
     if (!target || target.projectId !== input.projectId) {
       throw new DomainError(
         'TARGET_VERSION_NOT_FOUND',
@@ -147,7 +139,7 @@ export class CampaignsService {
       `campaign:create:${input.organizationId}:${input.projectId}:${actor.id}`,
       idempotencyKey,
       input,
-      () => {
+      async () => {
         const now = new Date().toISOString();
         const record = CampaignSchema.parse({
           id: this.store.nextId('cmp'),
@@ -160,8 +152,8 @@ export class CampaignsService {
           createdAt: now,
           updatedAt: now,
         });
-        this.store.campaigns.set(record.id, record);
-        this.appendCampaignEvent(record, actor, idempotencyKey, 'campaign.created', {
+        await this.store.createCampaign(record);
+        await this.appendCampaignEvent(record, actor, idempotencyKey, 'campaign.created', {
           status: record.status,
         });
         return record;
@@ -169,32 +161,30 @@ export class CampaignsService {
     );
   }
 
-  getCampaign(id: string): Campaign {
-    const campaign = this.store.campaigns.get(id);
+  async getCampaign(id: string): Promise<Campaign> {
+    const campaign = await this.store.getCampaign(id);
     if (!campaign) throw new DomainError('CAMPAIGN_NOT_FOUND', `Campaign ${id} was not found`);
     return campaign;
   }
 
-  listCampaigns(projectId?: string): Campaign[] {
-    return [...this.store.campaigns.values()].filter(
-      (campaign) => !projectId || campaign.projectId === projectId,
-    );
+  listCampaigns(projectId?: string): Promise<Campaign[]> {
+    return this.store.listCampaigns(projectId);
   }
 
-  transitionCampaign(
+  async transitionCampaign(
     id: string,
     body: unknown,
     actor: Actor,
     idempotencyKey: string,
     expectedVersion: number,
-  ): Campaign {
+  ): Promise<Campaign> {
     const input = TransitionRequestSchema.parse(body);
     return this.store.idempotent(
       `campaign:transition:${id}:${actor.id}`,
       idempotencyKey,
       { expectedVersion, ...input },
-      () => {
-        const current = this.getCampaign(id);
+      async () => {
+        const current = await this.getCampaign(id);
         if (input.to === 'RUNNING' && current.status === 'PAUSED' && current.resumeStatus) {
           const resumed = {
             ...current,
@@ -203,8 +193,8 @@ export class CampaignsService {
             stateVersion: current.stateVersion + 1,
             updatedAt: new Date().toISOString(),
           } satisfies Campaign;
-          this.store.updateCampaign(id, expectedVersion, resumed);
-          this.appendCampaignEvent(resumed, actor, idempotencyKey, 'campaign.resumed', {
+          await this.store.updateCampaign(id, expectedVersion, resumed);
+          await this.appendCampaignEvent(resumed, actor, idempotencyKey, 'campaign.resumed', {
             from: current.status,
             to: resumed.status,
             reason: input.reason,
@@ -219,40 +209,46 @@ export class CampaignsService {
           reason: input.reason,
           occurredAt: new Date().toISOString(),
         });
-        this.store.updateCampaign(id, expectedVersion, result.campaign);
-        this.appendCampaignEvent(result.campaign, actor, idempotencyKey, result.evidenceType, {
-          from: current.status,
-          to: result.campaign.status,
-          reason: input.reason,
-          invalidates: result.invalidates,
-        });
+        await this.store.updateCampaign(id, expectedVersion, result.campaign);
+        await this.appendCampaignEvent(
+          result.campaign,
+          actor,
+          idempotencyKey,
+          result.evidenceType,
+          {
+            from: current.status,
+            to: result.campaign.status,
+            reason: input.reason,
+            invalidates: result.invalidates,
+          },
+        );
         return result.campaign;
       },
     );
   }
 
-  listEvents(campaignId: string): DomainEvent[] {
-    this.getCampaign(campaignId);
-    return this.store.events.filter((event) => event.campaignId === campaignId);
+  async listEvents(campaignId: string): Promise<DomainEvent[]> {
+    await this.getCampaign(campaignId);
+    return this.store.listEvents(campaignId);
   }
 
   eventStore(): ControlStore {
     return this.store;
   }
 
-  createApprovalRequest(
+  async createApprovalRequest(
     campaignId: string,
     body: unknown,
     actor: Actor,
     idempotencyKey: string,
-  ): ApprovalRequestRecord {
+  ): Promise<ApprovalRequestRecord> {
     const input = ApprovalRequestInputSchema.parse(body);
-    const campaign = this.getCampaign(campaignId);
+    const campaign = await this.getCampaign(campaignId);
     return this.store.idempotent(
       `approval:create:${campaignId}:${actor.id}`,
       idempotencyKey,
       input,
-      () => {
+      async () => {
         const action = ProposedActionSchema.parse({
           contractVersion: '1.0',
           actionId: this.store.nextId('act'),
@@ -272,18 +268,18 @@ export class CampaignsService {
           status: 'PENDING',
           createdAt: new Date().toISOString(),
         };
-        this.store.approvalRequests.set(record.id, record);
+        await this.store.createApprovalRequest(record);
         return record;
       },
     );
   }
 
-  decideApproval(
+  async decideApproval(
     requestId: string,
     body: unknown,
     actor: Actor,
     idempotencyKey: string,
-  ): ApprovalArtifact {
+  ): Promise<ApprovalArtifact> {
     const input = ApprovalDecisionSchema.parse(body);
     if (
       ![
@@ -299,8 +295,8 @@ export class CampaignsService {
       `approval:decide:${requestId}:${actor.id}`,
       idempotencyKey,
       input,
-      () => {
-        const request = this.store.approvalRequests.get(requestId);
+      async () => {
+        const request = await this.store.getApprovalRequest(requestId);
         if (!request) {
           throw new DomainError(
             'APPROVAL_REQUEST_NOT_FOUND',
@@ -313,7 +309,6 @@ export class CampaignsService {
             'Approval request was already decided',
           );
         }
-        const now = new Date().toISOString();
         const artifact = ApprovalArtifactSchema.parse({
           contractVersion: '1.0',
           approvalId: this.store.nextId('apr'),
@@ -323,27 +318,28 @@ export class CampaignsService {
           policyVersion: input.policyVersion,
           decision: input.decision,
           decidedBy: actor,
-          decidedAt: now,
+          decidedAt: new Date().toISOString(),
           expiresAt: input.expiresAt,
           singleUse: true,
           consumedAt: null,
           reason: input.reason,
         });
-        request.status = 'DECIDED';
-        request.approval = artifact;
+        await this.store.updateApprovalRequest({
+          ...request,
+          status: 'DECIDED',
+          approval: artifact,
+        });
         return artifact;
       },
     );
   }
 
-  listApprovalRequests(campaignId?: string): ApprovalRequestRecord[] {
-    return [...this.store.approvalRequests.values()].filter(
-      (request) => !campaignId || request.action.campaignId === campaignId,
-    );
+  listApprovalRequests(campaignId?: string): Promise<ApprovalRequestRecord[]> {
+    return this.store.listApprovalRequests(campaignId);
   }
 
-  private requireProject(projectId: string, organizationId: string): ProjectRecord {
-    const project = this.store.projects.get(projectId);
+  private async requireProject(projectId: string, organizationId: string): Promise<ProjectRecord> {
+    const project = await this.store.getProject(projectId);
     if (!project || project.organizationId !== organizationId) {
       throw new DomainError(
         'PROJECT_NOT_FOUND',
@@ -353,13 +349,13 @@ export class CampaignsService {
     return project;
   }
 
-  private appendCampaignEvent(
+  private async appendCampaignEvent(
     campaign: Campaign,
     actor: Actor,
     idempotencyKey: string,
     eventType: string,
     payload: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     const event = DomainEventSchema.parse({
       contractVersion: '1.0',
       eventId: this.store.nextId('evt'),
@@ -375,6 +371,6 @@ export class CampaignsService {
       occurredAt: new Date().toISOString(),
       payload,
     });
-    this.store.appendEvent(event);
+    await this.store.appendEvent(event);
   }
 }

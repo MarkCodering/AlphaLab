@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createLogRecord, redactFields } from './index';
+import { createLogRecord, redactFields } from './index.js';
 
 describe('observability boundary', () => {
   it('redacts nested secret-shaped fields', () => {
-    expect(redactFields({ apiKey: 'secret', nested: { authorization: 'bearer x', ok: 1 } })).toEqual({
+    expect(
+      redactFields({ apiKey: 'secret', nested: { authorization: 'bearer x', ok: 1 } }),
+    ).toEqual({
       apiKey: '[REDACTED]',
       nested: { authorization: '[REDACTED]', ok: 1 },
     });

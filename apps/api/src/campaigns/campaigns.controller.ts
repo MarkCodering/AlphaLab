@@ -115,8 +115,10 @@ export class CampaignsController {
 
   @Sse('campaigns/:id/stream')
   @Version('1')
-  streamEvents(@Param('id') id: string): Observable<MessageEvent> {
-    const history = this.campaigns.listEvents(id).map((event) => this.toMessageEvent(event));
+  async streamEvents(@Param('id') id: string): Promise<Observable<MessageEvent>> {
+    const history = (await this.campaigns.listEvents(id)).map((event) =>
+      this.toMessageEvent(event),
+    );
     const live = fromEvent<DomainEvent>(
       this.campaigns.eventStore().eventEmitter,
       'domain-event',
