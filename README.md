@@ -8,16 +8,21 @@ This repository implements Target Contract `ALPHALAB-PLATFORM-001`.
 
 ## Current implementation
 
-The first executable foundation contains:
+The executable vertical slice contains:
 
 - versioned TypeScript contracts for campaigns, inference, experiments,
   approvals, events, evidence, and verification;
+- a responsive Next.js research workspace for campaign creation, state
+  transitions, approvals, evidence, audit records, and runtime health;
+- a versioned NestJS control plane with optimistic concurrency, idempotency,
+  live server-sent events, and a Prisma/PostgreSQL persistence adapter;
+- durable workflow checkpoints, bounded experiment execution, portable model
+  adapters, and an independent deterministic verifier;
 - the campaign state machine, including explicit pause/resume and terminal
   states;
 - deterministic budget reservation and reconciliation;
 - deny-by-default action classification and approval binding;
-- architecture decisions recording the reversible defaults used to begin the
-  implementation.
+- local, hardened Docker Compose, air-gap, and Terraform deployment contracts.
 
 The control plane, worker, model runtime, experiment broker, web workspace, and
 deployment profiles are built on these packages. See
@@ -43,12 +48,30 @@ the next free coordinated localhost ports when defaults are occupied and prints
 the effective URLs. Set a port explicitly, for example
 `ALPHALAB_WEB_PORT=3001 pnpm dev`, when a stable override is required.
 
+The zero-setup localhost profile uses the in-memory repository. Set
+`DATABASE_URL` to a PostgreSQL connection string (or use the Compose profile)
+to activate the Prisma repository. The container profile always sets
+`ALPHALAB_PERSISTENCE=prisma` and applies the checked-in Prisma migrations
+before the API starts.
+
+The worker also exposes an approval-gated deterministic reference workflow at
+`POST /v1/reference-runs` (through the frontend proxy at
+`/api/runtime/worker/reference-runs`). It accepts a campaign, immutable Target,
+and researcher identity; the first call returns `WAITING_FOR_APPROVAL` with the
+exact proposed-action digest. Supplying the matching human approval resumes the
+durable workflow and returns its verification report and reproducibility bundle.
+The workspace launches this flow from a `READY` campaign; the control plane
+imports the exact worker action into its approval queue and mirrors the returned
+experiment, verification, and discovery-candidate state into the campaign audit
+timeline.
+
 Run the verification suite separately:
 
 ```bash
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm audit
 ```
 
 ## Protected invariants
@@ -66,6 +89,8 @@ pnpm build
 
 ## Status
 
-AlphaLab is under active implementation. Passing package tests prove only the
-implemented contract and domain predicates; they do not yet prove the complete
-platform acceptance contract or a scientific discovery.
+AlphaLab is under active implementation. The runnable vertical slice and its
+current proof status are recorded in
+[implementation-status.md](docs/verification/implementation-status.md).
+Passing software tests do not by themselves prove the complete platform
+acceptance contract or a scientific discovery.

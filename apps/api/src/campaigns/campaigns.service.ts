@@ -7,6 +7,7 @@ import {
   ProposedActionSchema,
   TargetVersionSchema,
   TransitionPredicateSchema,
+  VerificationReportSchema,
   type Actor,
   type ApprovalArtifact,
   type Campaign,
@@ -60,6 +61,12 @@ const ApprovalDecisionSchema = z.object({
   reason: z.string().min(1).max(4000),
   expiresAt: z.iso.datetime({ offset: true }),
   policyVersion: z.string().min(3),
+});
+
+const WorkerSnapshotSchema = z.object({
+  campaign: CampaignSchema,
+  proposedAction: ProposedActionSchema.optional(),
+  verificationReport: VerificationReportSchema.optional(),
 });
 
 @Injectable()
@@ -329,6 +336,13 @@ export class CampaignsService {
           status: 'DECIDED',
           approval: artifact,
         });
+        if (
+          input.decision === 'APPROVED' &&
+          request.action.requestedBy.id === 'reference-workflow-worker' &&
+          request.action.campaignId
+        ) {
+          await this.resumeReferenceRun(request.action.campaignId, artifact, idempotencyKey);
+        }
         return artifact;
       },
     );
@@ -336,6 +350,159 @@ export class CampaignsService {
 
   listApprovalRequests(campaignId?: string): Promise<ApprovalRequestRecord[]> {
     return this.store.listApprovalRequests(campaignId);
+  }
+
+  async startReferenceRun(id: string, actor: Actor, idempotencyKey: string) {
+    const current = await this.getCampaign(id);
+    if (current.status !== 'READY') {
+      throw new DomainError('CAMPAIGN_NOT_READY', 'A reference run can only start from READY');
+    }
+    const target = await this.store.getTarget(current.targetVersionId);
+    if (!target)
+      throw new DomainError('TARGET_VERSION_NOT_FOUND', 'Campaign Target is unavailable');
+    const running = await this.transitionCampaign(
+      id,
+      {
+        to: 'RUNNING',
+        predicates: { budgetReserved: true },
+        reason: 'Launch local reference workflow.',
+      },
+      actor,
+      `${idempotencyKey}:launch`,
+      current.stateVersion,
+    );
+    const snapshot = await this.callReferenceWorker({
+      campaign: running,
+      target,
+      researcher: actor,
+    });
+    if (!snapshot.proposedAction || snapshot.campaign.status !== 'WAITING_FOR_APPROVAL') {
+      throw new DomainError(
+        'WORKER_PROTOCOL_INVALID',
+        'Reference worker did not produce an approval-gated action',
+      );
+    }
+    const approval = await this.importWorkerApprovalRequest(snapshot.proposedAction);
+    const waiting = await this.transitionCampaign(
+      id,
+      { to: 'WAITING_FOR_APPROVAL', reason: 'Reference experiment requires exact human approval.' },
+      { type: 'SERVICE', id: 'reference-workflow-worker', role: 'SYSTEM_SERVICE' },
+      `${idempotencyKey}:approval`,
+      running.stateVersion,
+    );
+    return { campaign: waiting, approval, workflowStatus: snapshot.campaign.status };
+  }
+
+  private async importWorkerApprovalRequest(action: import('@alphalab/contracts').ProposedAction) {
+    const existing = (await this.store.listApprovalRequests(action.campaignId)).find(
+      (request) => request.actionDigest === digestAction(action),
+    );
+    if (existing) return existing;
+    const record: ApprovalRequestRecord = {
+      id: this.store.nextId('aprq'),
+      action,
+      actionDigest: digestAction(action),
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    };
+    await this.store.createApprovalRequest(record);
+    return record;
+  }
+
+  private async resumeReferenceRun(
+    campaignId: string,
+    approval: ApprovalArtifact,
+    idempotencyKey: string,
+  ): Promise<void> {
+    const waiting = await this.getCampaign(campaignId);
+    if (waiting.status !== 'WAITING_FOR_APPROVAL') return;
+    const target = await this.store.getTarget(waiting.targetVersionId);
+    if (!target)
+      throw new DomainError('TARGET_VERSION_NOT_FOUND', 'Campaign Target is unavailable');
+    const snapshot = await this.callReferenceWorker({
+      campaign: waiting,
+      target,
+      researcher: { type: 'USER', id: 'reference-run-resumer', role: 'RESEARCHER' },
+      approval,
+    });
+    if (snapshot.campaign.status !== 'DISCOVERY_CANDIDATE' || !snapshot.verificationReport) {
+      throw new DomainError(
+        'WORKER_PROTOCOL_INVALID',
+        'Reference worker did not finish verification',
+      );
+    }
+    const serviceActor: Actor = {
+      type: 'SERVICE',
+      id: 'reference-workflow-worker',
+      role: 'SYSTEM_SERVICE',
+    };
+    const scheduled = await this.transitionCampaign(
+      campaignId,
+      {
+        to: 'RUNNING_EXPERIMENT',
+        predicates: { approvalValid: true, budgetReserved: true },
+        reason: 'Exact approval accepted by reference workflow.',
+      },
+      serviceActor,
+      `${idempotencyKey}:schedule`,
+      waiting.stateVersion,
+    );
+    const verifying = await this.transitionCampaign(
+      campaignId,
+      {
+        to: 'VERIFYING',
+        predicates: { executionCompleted: true },
+        reason: 'Reference experiment completed.',
+      },
+      serviceActor,
+      `${idempotencyKey}:verify`,
+      scheduled.stateVersion,
+    );
+    const candidate = await this.transitionCampaign(
+      campaignId,
+      {
+        to: 'DISCOVERY_CANDIDATE',
+        predicates: { provenanceComplete: true, verificationPassed: true },
+        reason: 'Reference verification predicates passed; reviewer acceptance remains required.',
+      },
+      serviceActor,
+      `${idempotencyKey}:candidate`,
+      verifying.stateVersion,
+    );
+    await this.store.updateCampaign(candidate.id, candidate.stateVersion, {
+      ...candidate,
+      budgetUsage: snapshot.campaign.budgetUsage,
+      budgetVersion: candidate.budgetVersion + 1,
+      updatedAt: new Date().toISOString(),
+    });
+    await this.appendCampaignEvent(
+      candidate,
+      serviceActor,
+      `${idempotencyKey}:bundle`,
+      'bundle.exported',
+      {
+        verificationReportId: snapshot.verificationReport.reportId,
+        verificationStatus: snapshot.verificationReport.status,
+      },
+    );
+  }
+
+  private async callReferenceWorker(input: unknown): Promise<z.infer<typeof WorkerSnapshotSchema>> {
+    const origin = process.env.ALPHALAB_WORKER_ORIGIN ?? 'http://127.0.0.1:4311';
+    const response = await fetch(`${origin.replace(/\/$/, '')}/v1/reference-runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new DomainError('WORKER_UNAVAILABLE', 'Reference worker request failed', {
+        status: response.status,
+        payload,
+      });
+    }
+    return WorkerSnapshotSchema.parse(payload);
   }
 
   private async requireProject(projectId: string, organizationId: string): Promise<ProjectRecord> {

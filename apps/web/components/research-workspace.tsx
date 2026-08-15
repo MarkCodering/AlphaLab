@@ -270,6 +270,20 @@ export function ResearchWorkspace() {
     }
   }
 
+  async function startReferenceRun() {
+    if (!selectedCampaign) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await controlApi.startReferenceRun(selectedCampaign.id);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Reference workflow launch failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function decideApproval(request: ApprovalRequestRecord, decision: 'APPROVED' | 'REJECTED') {
     setBusy(true);
     try {
@@ -432,9 +446,9 @@ export function ResearchWorkspace() {
               <LoaderCircle className="spin" size={24} />
               <span>Connecting to the local control plane…</span>
             </div>
-          ) : !selectedCampaign ? (
+          ) : !selectedCampaign && view === 'workspace' ? (
             <EmptyWorkspace onCreate={() => setCreatorOpen(true)} health={health} />
-          ) : view === 'workspace' ? (
+          ) : view === 'workspace' && selectedCampaign ? (
             <>
               <section className="campaign-heading">
                 <div>
@@ -581,7 +595,27 @@ export function ResearchWorkspace() {
                         <strong>Discovery loop</strong>
                       </div>
                     </div>
-                    {nextAction ? (
+                    {selectedCampaign.status === 'READY' ? (
+                      <div className="route-callout">
+                        <div>
+                          <FlaskConical size={17} />
+                          <span>
+                            <strong>Local reference workflow</strong>
+                            <small>
+                              Generates a bounded plan, then pauses for exact human approval.
+                            </small>
+                          </span>
+                        </div>
+                        <button
+                          className="primary"
+                          disabled={busy}
+                          onClick={() => void startReferenceRun()}
+                        >
+                          {busy ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
+                          Run reference workflow
+                        </button>
+                      </div>
+                    ) : nextAction ? (
                       <div className="route-callout">
                         <div>
                           <CircleDot size={17} />
@@ -727,7 +761,7 @@ export function ResearchWorkspace() {
                       <span className={`health-dot ${health}`} />
                       <div>
                         <strong>Control plane</strong>
-                        <small>127.0.0.1:4310 · API v1</small>
+                        <small>Loopback · API v1</small>
                       </div>
                       <b>{health}</b>
                     </div>

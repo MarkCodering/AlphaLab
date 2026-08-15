@@ -8,3 +8,8 @@ allowBuilds:
   '@scarf/scarf': false
   esbuild: false
   prisma: true
+
+overrides:
+  'ajv@>=7.0.0-alpha.0 <8.18.0': 8.18.0
+  'js-yaml@>=5.0.0 <=5.2.1': 5.2.2
+  'picomatch@>=4.0.0 <4.0.4': 4.0.5

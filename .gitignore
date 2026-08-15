@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 dist/
 .next*/
+apps/web/next-env.d.ts
 .playwright-cli/
 coverage/
 .turbo/

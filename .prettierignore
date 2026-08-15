@@ -1,6 +1,7 @@
 node_modules
 dist
 .next*
+apps/web/next-env.d.ts
 .venv
 .pytest_cache
 **/.pytest_cache

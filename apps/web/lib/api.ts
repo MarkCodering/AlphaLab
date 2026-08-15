@@ -106,6 +106,11 @@ export const controlApi = {
       headers: mutationHeaders({ 'if-match': String(campaign.stateVersion) }),
       body: JSON.stringify(body),
     }),
+  startReferenceRun: (campaignId: string) =>
+    request<{ campaign: CampaignRecord }>(`/campaigns/${campaignId}/reference-runs`, {
+      method: 'POST',
+      headers: mutationHeaders(),
+    }),
   decideApproval: (requestId: string, decision: 'APPROVED' | 'REJECTED', reason: string) =>
     request(`/approval-requests/${requestId}/decisions`, {
       method: 'POST',

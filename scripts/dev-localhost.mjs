@@ -41,13 +41,19 @@ async function choosePort(environmentName, preferred, reserved) {
 }
 
 const reserved = new Set();
+const webPort = await choosePort('ALPHALAB_WEB_PORT', 3000, reserved);
+// Keep each automatically selected stack on the same offset. This matters when
+// another AlphaLab dev process is already running: a watch-mode service can
+// briefly release its port while recompiling, so probing every default port
+// independently can accidentally split two stacks across the same profile.
+const profileOffset = process.env.ALPHALAB_WEB_PORT ? 0 : webPort - 3000;
 const ports = {
-  web: await choosePort('ALPHALAB_WEB_PORT', 3000, reserved),
-  api: await choosePort('ALPHALAB_API_PORT', 4310, reserved),
-  worker: await choosePort('ALPHALAB_WORKER_PORT', 4311, reserved),
-  model: await choosePort('ALPHALAB_MODEL_PORT', 8100, reserved),
-  experiment: await choosePort('ALPHALAB_EXPERIMENT_PORT', 8101, reserved),
-  verifier: await choosePort('ALPHALAB_VERIFIER_PORT', 8102, reserved),
+  web: webPort,
+  api: await choosePort('ALPHALAB_API_PORT', 4310 + profileOffset, reserved),
+  worker: await choosePort('ALPHALAB_WORKER_PORT', 4311 + profileOffset, reserved),
+  model: await choosePort('ALPHALAB_MODEL_PORT', 8100 + profileOffset, reserved),
+  experiment: await choosePort('ALPHALAB_EXPERIMENT_PORT', 8101 + profileOffset, reserved),
+  verifier: await choosePort('ALPHALAB_VERIFIER_PORT', 8102 + profileOffset, reserved),
 };
 
 const environment = {

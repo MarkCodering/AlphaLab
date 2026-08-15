@@ -3,7 +3,7 @@ import type { INestApplication } from '@nestjs/common';
 import { VersioningType } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { DomainErrorFilter } from '../src/common/domain-error.filter.js';
 
@@ -24,6 +24,7 @@ describe('AlphaLab control plane', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await app.close();
   });
 
@@ -194,5 +195,165 @@ describe('AlphaLab control plane', () => {
       })
       .expect(409);
     expect(conflict.body.code).toBe('STATE_VERSION_CONFLICT');
+  });
+
+  it('runs the approval-gated reference workflow through the control plane', async () => {
+    let workerAction: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const input = JSON.parse(String(init.body)) as {
+          campaign: Record<string, unknown>;
+          target: Record<string, unknown>;
+          approval?: unknown;
+        };
+        if (!input.approval) {
+          workerAction = {
+            contractVersion: '1.0',
+            actionId: 'act_reference_worker',
+            organizationId: input.campaign.organizationId,
+            projectId: input.campaign.projectId,
+            campaignId: input.campaign.id,
+            kind: 'EXPERIMENT_EXECUTION',
+            riskTier: 'RED',
+            parameters: { planDigest: `sha256:${'a'.repeat(64)}` },
+            requestedBy: {
+              type: 'SERVICE',
+              id: 'reference-workflow-worker',
+              role: 'SYSTEM_SERVICE',
+            },
+            requestedAt: '2026-08-15T00:00:00.000Z',
+          };
+          return new Response(
+            JSON.stringify({
+              campaign: { ...input.campaign, status: 'WAITING_FOR_APPROVAL' },
+              proposedAction: workerAction,
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            campaign: {
+              ...input.campaign,
+              status: 'DISCOVERY_CANDIDATE',
+              budgetUsage: {
+                wallClockSeconds: 60,
+                modelCalls: 2,
+                tokens: 0,
+                experiments: 1,
+                computeMilliUnits: 100,
+                activeChildren: 0,
+              },
+            },
+            verificationReport: {
+              contractVersion: '1.0',
+              reportId: 'vrf_reference_worker',
+              organizationId: input.campaign.organizationId,
+              projectId: input.campaign.projectId,
+              campaignId: input.campaign.id,
+              policyVersion: input.target.verificationPolicyId,
+              status: 'VERIFIED',
+              predicateResults: [
+                {
+                  predicateId: 'reference-positive-mean',
+                  status: 'PASS',
+                  evidenceIds: [],
+                  reason: 'The deterministic local reference experiment passed.',
+                },
+              ],
+              candidateEligible: true,
+              humanApprovalRequired: true,
+              createdAt: '2026-08-15T00:00:00.000Z',
+            },
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    const project = await request(app.getHttpServer())
+      .post('/v1/projects')
+      .set(actorHeaders)
+      .set('idempotency-key', 'reference-project')
+      .send({ organizationId: 'organization-1', name: 'Reference runner' })
+      .expect(201);
+    const target = await request(app.getHttpServer())
+      .post('/v1/targets')
+      .set(actorHeaders)
+      .set('idempotency-key', 'reference-target')
+      .send({
+        organizationId: 'organization-1',
+        projectId: project.body.id,
+        scientificGoal: 'Test the worker bridge.',
+        researchQuestion: 'Can an exact approved action run?',
+        acceptanceCriteria: ['A candidate is created only after verification.'],
+        verificationPolicyId: 'policy-reference',
+        stopConditions: ['Stop after one run.'],
+      })
+      .expect(201);
+    const campaign = await request(app.getHttpServer())
+      .post('/v1/campaigns')
+      .set(actorHeaders)
+      .set('idempotency-key', 'reference-campaign')
+      .send({
+        organizationId: 'organization-1',
+        projectId: project.body.id,
+        targetVersionId: target.body.id,
+        budgetLimit: {
+          wallClockSeconds: 600,
+          modelCalls: 4,
+          tokens: 1000,
+          experiments: 1,
+          computeMilliUnits: 1000,
+          parallelChildren: 1,
+        },
+      })
+      .expect(201);
+    let state = campaign.body;
+    for (const [to, predicates] of [
+      ['TARGET_REVIEW', { targetComplete: true }],
+      ['READY_FOR_ROUTE', { targetComplete: true }],
+      ['ROUTE_REVIEW', {}],
+      ['READY', { routeApproved: true }],
+    ] as const) {
+      state = (
+        await request(app.getHttpServer())
+          .post(`/v1/campaigns/${campaign.body.id}/transitions`)
+          .set(actorHeaders)
+          .set('idempotency-key', `reference-${to}`)
+          .set('if-match', String(state.stateVersion))
+          .send({ to, predicates, reason: `Move to ${to}.` })
+          .expect(201)
+      ).body;
+    }
+
+    const launched = await request(app.getHttpServer())
+      .post(`/v1/campaigns/${campaign.body.id}/reference-runs`)
+      .set(actorHeaders)
+      .set('idempotency-key', 'reference-launch')
+      .expect(201);
+    expect(launched.body.campaign.status).toBe('WAITING_FOR_APPROVAL');
+    expect(workerAction).toBeDefined();
+    const approvals = await request(app.getHttpServer()).get('/v1/approval-requests').expect(200);
+    const approval = approvals.body[0];
+    await request(app.getHttpServer())
+      .post(`/v1/approval-requests/${approval.id}/decisions`)
+      .set({ 'x-actor-id': 'reviewer-1', 'x-actor-role': 'SCIENTIFIC_REVIEWER' })
+      .set('idempotency-key', 'reference-approve')
+      .send({
+        decision: 'APPROVED',
+        reason: 'Reviewed.',
+        expiresAt: '2026-08-16T00:00:00.000Z',
+        policyVersion: 'policy-reference',
+      })
+      .expect(201);
+    const finalCampaign = await request(app.getHttpServer())
+      .get(`/v1/campaigns/${campaign.body.id}`)
+      .expect(200);
+    expect(finalCampaign.body).toMatchObject({
+      status: 'DISCOVERY_CANDIDATE',
+      budgetUsage: { experiments: 1, modelCalls: 2 },
+    });
   });
 });

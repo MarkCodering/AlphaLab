@@ -88,6 +88,21 @@ export class CampaignsController {
     return this.campaigns.getCampaign(id);
   }
 
+  @Post('campaigns/:id/reference-runs')
+  @Version('1')
+  startReferenceRun(
+    @Param('id') id: string,
+    @Headers('x-actor-id') actorId?: string,
+    @Headers('x-actor-role') actorRole?: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.campaigns.startReferenceRun(
+      id,
+      actorFromHeaders(actorId, actorRole),
+      requireIdempotencyKey(idempotencyKey),
+    );
+  }
+
   @Post('campaigns/:id/transitions')
   @Version('1')
   transitionCampaign(

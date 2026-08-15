@@ -1,28 +1,60 @@
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 300 500;
+  font-display: swap;
+  src: url('/fonts/inter-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600 800;
+  font-display: swap;
+  src: url('/fonts/inter-600-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Inter Tight';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('/fonts/inter-tight-latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/jetbrains-latin.woff2') format('woff2');
+}
+
 :root {
-  --bg: #f3f5f1;
-  --paper: #fbfcf9;
-  --panel: #ffffff;
-  --ink: #17211d;
-  --muted: #68736d;
-  --line: #dfe5df;
-  --line-soft: #edf0ec;
-  --navy: #12251f;
-  --navy-2: #1b332a;
-  --green: #1d7554;
-  --green-bright: #2da775;
-  --green-pale: #e2f2e9;
-  --amber: #a66b16;
-  --amber-pale: #fff2d7;
-  --red: #a9423d;
-  --red-pale: #fbe9e7;
-  --shadow: 0 16px 44px rgba(27, 47, 39, 0.08);
-  font-family:
-    Inter,
-    ui-sans-serif,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
+  color-scheme: dark;
+  --bg: oklch(0.1 0.004 260);
+  --paper: oklch(0.12 0.005 260);
+  --panel: oklch(0.13 0.006 260);
+  --ink: oklch(0.98 0.003 260);
+  --muted: oklch(0.74 0.008 260);
+  --line: oklch(1 0 0 / 0.12);
+  --line-soft: oklch(1 0 0 / 0.07);
+  --navy: oklch(0.1 0.004 260);
+  --navy-2: oklch(0.14 0.006 260);
+  --green: oklch(0.82 0.13 218);
+  --green-bright: oklch(0.82 0.13 218);
+  --green-pale: oklch(0.82 0.13 218 / 0.14);
+  --amber: oklch(0.8 0.15 82);
+  --amber-pale: oklch(0.8 0.15 82 / 0.14);
+  --red: oklch(0.73 0.16 32);
+  --red-pale: oklch(0.73 0.16 32 / 0.14);
+  --success: oklch(0.78 0.18 145);
+  --accent-secondary: oklch(0.78 0.14 268);
+  --shadow: 0 34px 70px -38px oklch(0 0 0 / 0.85), 0 0 0 1px oklch(1 0 0 / 0.025);
+  --font-display: 'Inter Tight', 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: var(--font-body);
 }
 
 * {
@@ -37,6 +69,14 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-size: 14px;
+  background-image:
+    linear-gradient(oklch(1 0 0 / 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(1 0 0 / 0.028) 1px, transparent 1px),
+    radial-gradient(circle at 52% -18%, oklch(0.82 0.13 218 / 0.12), transparent 37%);
+  background-size:
+    80px 80px,
+    80px 80px,
+    auto;
 }
 button,
 input,
@@ -1541,4 +1581,187 @@ button:disabled {
   .creator footer > div {
     justify-content: flex-end;
   }
+}
+
+/* Mindify AI language: technical dark surfaces, precision metadata, and cyan interaction. */
+.sidebar {
+  background: color-mix(in oklch, var(--bg) 94%, black);
+  color: var(--ink);
+  border-right-color: var(--line);
+}
+.brand-row,
+.project-list,
+.sidebar-footer {
+  border-color: var(--line-soft);
+}
+.brand-row strong,
+.campaign-heading h1,
+.focused-view h1,
+.metric-value strong,
+.target-block p,
+.empty-workspace h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+}
+.brand-row strong {
+  font-size: 17px;
+}
+.brand-row small,
+.nav-label,
+.project-list-heading,
+.eyebrow,
+.record-head,
+.health-card > small,
+.runtime-chip strong {
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+}
+.brand-mark,
+.panel-title-icon,
+.metric-top > span,
+.record-icon,
+.health-card > div > span {
+  color: var(--green);
+}
+.brand-mark span {
+  font-family: var(--font-mono);
+  font-size: 15px;
+}
+.nav-item,
+.project-item,
+.runtime-chip,
+.local-profile,
+.local-profile small,
+.project-item small,
+.project-empty,
+.nav-label,
+.project-list-heading {
+  color: var(--muted);
+}
+.nav-item,
+.project-item,
+.primary,
+.secondary,
+.ghost,
+.icon-button,
+.search-button,
+.panel,
+.metric-card,
+.approval-card,
+.focused-content,
+.health-card,
+.creator,
+.route-callout,
+.runtime-chip {
+  border-radius: 6px;
+}
+.nav-item.active {
+  color: var(--ink);
+  background: var(--green-pale);
+  box-shadow: inset 2px 0 var(--green);
+}
+.nav-item:hover,
+.project-item:hover,
+.project-item.selected {
+  background: oklch(1 0 0 / 0.055);
+  color: var(--ink);
+}
+.main-area,
+.topbar {
+  background: transparent;
+}
+.topbar {
+  background: oklch(0.1 0.004 260 / 0.82);
+  border-color: var(--line);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+.search-button,
+.icon-button,
+.secondary,
+.metric-card,
+.panel,
+.approval-card,
+.focused-content,
+.health-card,
+.creator {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+  box-shadow: none;
+}
+.search-button kbd,
+.approval-card code,
+.health-card code {
+  background: var(--paper);
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.primary,
+.approval-actions .approve {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+.primary:hover,
+.approval-actions .approve:hover {
+  background: var(--green);
+  border-color: var(--green);
+  box-shadow: 0 14px 36px -14px oklch(0.82 0.13 218 / 0.45);
+}
+.secondary:hover,
+.icon-button:hover,
+.text-button:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
+.panel-heading,
+.check-line,
+.stop-line,
+.readiness-row,
+.runtime-row,
+.record-row,
+.record-head {
+  border-color: var(--line-soft);
+}
+.route-callout,
+.evidence-note,
+.route-callout.quiet {
+  background: var(--paper);
+  border: 1px solid var(--line-soft);
+}
+.status-dot.active,
+.health-dot.online,
+.live-label i {
+  background: var(--success);
+  box-shadow: 0 0 0 3px oklch(0.78 0.18 145 / 0.14);
+}
+.status-dot.done {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-pale);
+}
+.meter,
+.route-node::after,
+.event-track i {
+  background: oklch(1 0 0 / 0.08);
+}
+.meter i,
+.route-node.complete > span,
+.route-node.complete::after {
+  background: var(--green);
+}
+.route-node.current > span {
+  color: var(--green);
+  border-color: var(--green);
+  box-shadow: 0 0 0 4px var(--green-pale);
+}
+.empty-illustration .orbit,
+.empty-illustration .particle {
+  display: none;
+}
+.empty-illustration {
+  color: var(--green);
+  background: var(--green-pale);
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
