@@ -1,0 +1,13 @@
+{
+  "name": "@alphalab/verifier-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "uv build",
+    "clean": "rm -rf dist",
+    "dev": "uv run uvicorn alphalab_verifier_runtime.main:app --reload --host 127.0.0.1 --port ${ALPHALAB_VERIFIER_PORT:-8102}",
+    "start": "uv run alphalab-verifier-runtime",
+    "test": "uv run --extra test pytest -q tests",
+    "typecheck": "uv run python -m compileall -q src"
+  }
+}

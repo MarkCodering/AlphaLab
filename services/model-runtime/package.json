@@ -1,0 +1,13 @@
+{
+  "name": "@alphalab/model-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "uv build",
+    "clean": "rm -rf dist",
+    "dev": "uv run uvicorn alphalab_model_runtime.main:app --reload --host 127.0.0.1 --port ${ALPHALAB_MODEL_PORT:-8100}",
+    "start": "uv run alphalab-model-runtime",
+    "test": "uv run --extra test pytest -q tests",
+    "typecheck": "uv run python -m compileall -q src"
+  }
+}

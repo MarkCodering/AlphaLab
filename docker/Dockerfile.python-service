@@ -1,0 +1,17 @@
+ARG SERVICE
+FROM ghcr.io/astral-sh/uv:0.11.7-python3.13-bookworm-slim AS build
+ARG SERVICE
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+WORKDIR /service
+COPY services/${SERVICE}/pyproject.toml services/${SERVICE}/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+COPY services/${SERVICE}/src ./src
+RUN uv sync --frozen --no-dev
+
+FROM python:3.13.5-slim-bookworm AS runtime
+ENV PATH=/service/.venv/bin:$PATH
+ENV PYTHONDONTWRITEBYTECODE=1
+WORKDIR /service
+COPY --from=build --chown=65532:65532 /service /service
+USER 65532:65532

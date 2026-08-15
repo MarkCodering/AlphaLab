@@ -1,0 +1,25 @@
+{
+  "name": "@alphalab/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "dev": "pnpm build && node dist/main.js",
+    "start": "node dist/main.js",
+    "test": "vitest run test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@alphalab/contracts": "workspace:*",
+    "@alphalab/domain": "workspace:*",
+    "@alphalab/evidence": "workspace:*",
+    "@alphalab/experiment-sdk": "workspace:*",
+    "@alphalab/model-adapters": "workspace:*",
+    "@alphalab/policy": "workspace:*",
+    "@alphalab/verifier": "workspace:*",
+    "zod": "4.4.3"
+  }
+}

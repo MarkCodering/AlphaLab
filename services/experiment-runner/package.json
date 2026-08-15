@@ -1,0 +1,13 @@
+{
+  "name": "@alphalab/experiment-runner",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "uv build",
+    "clean": "rm -rf dist",
+    "dev": "uv run uvicorn alphalab_experiment_runner.main:app --reload --host 127.0.0.1 --port ${ALPHALAB_EXPERIMENT_PORT:-8101}",
+    "start": "uv run alphalab-experiment-runner",
+    "test": "uv run --extra test pytest -q tests",
+    "typecheck": "uv run python -m compileall -q src"
+  }
+}

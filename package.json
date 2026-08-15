@@ -1,0 +1,33 @@
+{
+  "name": "alphalab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first autonomous scientific-discovery platform",
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm dev:localhost",
+    "dev:localhost": "node scripts/dev-localhost.mjs",
+    "dev:api": "pnpm --filter @alphalab/api dev",
+    "dev:experiment": "pnpm --filter @alphalab/experiment-runner dev",
+    "dev:model": "pnpm --filter @alphalab/model-runtime dev",
+    "dev:verifier": "pnpm --filter @alphalab/verifier-runtime dev",
+    "dev:web": "pnpm --filter @alphalab/web dev",
+    "dev:worker": "pnpm --filter @alphalab/worker dev",
+    "build": "pnpm -r --if-present build",
+    "clean": "pnpm -r --if-present clean",
+    "format:check": "prettier --check .",
+    "format": "prettier --write .",
+    "test": "pnpm -r --if-present test",
+    "test:python": "uv run --project services/model-runtime --extra test pytest -q services/model-runtime/tests && uv run --project services/experiment-runner --extra test pytest -q services/experiment-runner/tests && uv run --project services/verifier-runtime --extra test pytest -q services/verifier-runtime/tests",
+    "typecheck": "pnpm -r --if-present typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "26.2.0",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,0 +1,17 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+dist/
+.next*/
+.playwright-cli/
+coverage/
+.turbo/
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+.DS_Store
+artifacts/
+data/

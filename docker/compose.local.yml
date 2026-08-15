@@ -1,0 +1,159 @@
+name: alphalab
+
+x-service-security: &service-security
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [alphalab-internal]
+
+services:
+  web:
+    <<: *service-security
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    image: alphalab/web:local
+    ports: ["127.0.0.1:3000:3000"]
+    tmpfs: [/tmp]
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  api:
+    <<: *service-security
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    image: alphalab/api:local
+    environment:
+      ALPHALAB_API_HOST: 0.0.0.0
+      ALPHALAB_API_PORT: 4310
+      DATABASE_URL: postgresql://alphalab:${ALPHALAB_POSTGRES_PASSWORD:?set ALPHALAB_POSTGRES_PASSWORD}@postgres:5432/alphalab
+      ALPHALAB_OBJECT_ENDPOINT: http://minio:9000
+    ports: ["127.0.0.1:4310:4310"]
+    tmpfs: [/tmp]
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4310/v1/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  worker:
+    <<: *service-security
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    image: alphalab/worker:local
+    environment:
+      ALPHALAB_WORKER_HOST: 0.0.0.0
+      ALPHALAB_WORKER_PORT: 4311
+      ALPHALAB_WORKFLOW_STATE: /var/lib/alphalab/workflows
+      DATABASE_URL: postgresql://alphalab:${ALPHALAB_POSTGRES_PASSWORD:?set ALPHALAB_POSTGRES_PASSWORD}@postgres:5432/alphalab
+    volumes: [workflow-state:/var/lib/alphalab/workflows]
+    tmpfs: [/tmp]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4311/v1/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  model-runtime:
+    <<: *service-security
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.python-service
+      args: { SERVICE: model-runtime }
+    image: alphalab/model-runtime:local
+    command: [uvicorn, alphalab_model_runtime.main:app, --host, 0.0.0.0, --port, "8100"]
+    tmpfs: [/tmp]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/v1/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  experiment-runner:
+    <<: *service-security
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.python-service
+      args: { SERVICE: experiment-runner }
+    image: alphalab/experiment-runner:local
+    command: [uvicorn, alphalab_experiment_runner.main:app, --host, 0.0.0.0, --port, "8101"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=256m"]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/v1/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  verifier-runtime:
+    <<: *service-security
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.python-service
+      args: { SERVICE: verifier-runtime }
+    image: alphalab/verifier-runtime:local
+    command: [uvicorn, alphalab_verifier_runtime.main:app, --host, 0.0.0.0, --port, "8102"]
+    tmpfs: [/tmp]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8102/v1/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  postgres:
+    image: postgres:17.5-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: alphalab
+      POSTGRES_USER: alphalab
+      POSTGRES_PASSWORD: ${ALPHALAB_POSTGRES_PASSWORD:?set ALPHALAB_POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../apps/api/migrations:/docker-entrypoint-initdb.d:ro
+    networks: [alphalab-internal]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U alphalab -d alphalab]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-07-23T15-54-02Z
+    restart: unless-stopped
+    command: [server, /data, --console-address, :9001]
+    environment:
+      MINIO_ROOT_USER: ${ALPHALAB_MINIO_ROOT_USER:?set ALPHALAB_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${ALPHALAB_MINIO_ROOT_PASSWORD:?set ALPHALAB_MINIO_ROOT_PASSWORD}
+    volumes: [object-data:/data]
+    networks: [alphalab-internal]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD, curl, -f, http://127.0.0.1:9000/minio/health/live]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+networks:
+  alphalab-internal:
+    internal: true
+
+volumes:
+  postgres-data:
+  object-data:
+  workflow-state:

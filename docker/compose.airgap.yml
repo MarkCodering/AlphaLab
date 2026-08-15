@@ -1,0 +1,9 @@
+services:
+  web: { pull_policy: never }
+  api: { pull_policy: never }
+  worker: { pull_policy: never }
+  model-runtime: { pull_policy: never }
+  experiment-runner: { pull_policy: never }
+  verifier-runtime: { pull_policy: never }
+  postgres: { pull_policy: never }
+  minio: { pull_policy: never }
