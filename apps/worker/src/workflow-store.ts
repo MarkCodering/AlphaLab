@@ -8,6 +8,7 @@ import type {
   ExperimentPlan,
   ExperimentResult,
   Hypothesis,
+  NextBestExperimentReport,
   ProposedAction,
   ReproducibilityBundleManifest,
   SupervisorFinding,
@@ -15,7 +16,14 @@ import type {
 } from '@alphalab/contracts';
 
 export type WorkflowNodeId =
-  'hypothesis' | 'plan' | 'supervision' | 'approval' | 'experiment' | 'verification' | 'export';
+  | 'hypothesis'
+  | 'plan'
+  | 'supervision'
+  | 'approval'
+  | `experiment-${number}`
+  | 'verification'
+  | 'next-experiment'
+  | 'export';
 
 export interface NodeReceipt {
   nodeId: WorkflowNodeId;
@@ -36,6 +44,7 @@ export interface CampaignWorkflowSnapshot {
   results: ExperimentResult[];
   findings: SupervisorFinding[];
   controllerDecisions: ControllerDecision[];
+  nextBestExperimentReport?: NextBestExperimentReport;
   verificationReport?: VerificationReport;
   bundle?: ReproducibilityBundleManifest;
   receipts: Partial<Record<WorkflowNodeId, NodeReceipt>>;

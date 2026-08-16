@@ -11,6 +11,7 @@ export const ActorTypeSchema = z.enum(['USER', 'SERVICE']);
 export const ActorRoleSchema = z.enum([
   'RESEARCHER',
   'SCIENTIFIC_REVIEWER',
+  'VIEWER',
   'ORGANIZATION_ADMIN',
   'INFRASTRUCTURE_OPERATOR',
   'SYSTEM_SERVICE',

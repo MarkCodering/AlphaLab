@@ -108,6 +108,11 @@ function campaign(): Campaign {
     organizationId: 'organization-1',
     projectId: 'project-1',
     targetVersionId: 'target-version-1',
+    datasetVersionIds: [],
+    permittedModelIds: ['reference-model'],
+    permittedToolIds: ['deterministic-reference-executor'],
+    fallbackMode: 'STOP',
+    approvedFallbackModelIds: [],
     status: 'READY',
     resumeStatus: null,
     stateVersion: 0,
@@ -141,6 +146,7 @@ const target: TargetVersion = {
   version: 1,
   scientificGoal: 'Validate a bounded deterministic experiment.',
   researchQuestion: 'Does candidate accuracy reach 0.9?',
+  initialHypotheses: ['The approved feature transformation improves accuracy.'],
   acceptanceCriteria: ['accuracy >= 0.9'],
   verificationPolicyId: 'verification-policy-1',
   stopConditions: ['Stop after one experiment.'],
@@ -178,6 +184,36 @@ describe('durable campaign workflow', () => {
           status: 'SUCCEEDED',
           measurements: [{ name: 'accuracy', value: 0.91 }],
           artifacts: [resultArtifact],
+          modelProvenance: {
+            providerId: 'reference-model-provider',
+            modelId: 'reference-model',
+            modelRevisionDigest: imageDigest,
+            normalizedResultDigest: resultDigest,
+          },
+          executionProvenance: {
+            codeRevision: '7f3b5c9a04bdc1e2f7f8e8e8693e7f05b27fe6b8',
+            codeRevisionVerified: true,
+            modelAdapter: {
+              providerId: 'reference-model-provider',
+              modelId: 'reference-model',
+              modelRevisionDigest: imageDigest,
+              adapterVersion: '1.0.0',
+              promptTemplateVersion: 'reference-test-v1',
+            },
+            datasets: [
+              {
+                datasetVersionId: 'dataset-version-1',
+                contentDigest: resultDigest,
+              },
+            ],
+            invocation: {
+              imageReference: invocation.imageReference,
+              imageDigest: invocation.imageDigest,
+              command: invocation.command,
+              parameters: { seed: 7 },
+              seeds: [7],
+            },
+          },
           normalizedResultDigest: resultDigest,
           environmentDigest,
           startedAt: timestamp,
@@ -210,6 +246,14 @@ describe('durable campaign workflow', () => {
       seeds: [7],
     };
 
+    await expect(
+      workflow.run({
+        ...input,
+        campaign: { ...input.campaign, permittedModelIds: ['unapproved-model'] },
+      }),
+    ).rejects.toThrow('does not permit reference-model');
+    expect(model.calls).toBe(0);
+
     const paused = await workflow.run(input);
     expect(paused.campaign.status).toBe('WAITING_FOR_APPROVAL');
     expect(paused.proposedAction).toBeDefined();
@@ -226,7 +270,7 @@ describe('durable campaign workflow', () => {
       decision: 'APPROVED',
       decidedBy: reviewer,
       decidedAt: timestamp,
-      expiresAt: '2026-08-16T00:00:00+00:00',
+      expiresAt: '2099-01-01T00:00:00+00:00',
       singleUse: true,
       consumedAt: null,
       reason: 'Reviewed the exact image, command, and plan digest.',
@@ -251,7 +295,7 @@ describe('durable campaign workflow', () => {
       'plan',
       'supervision',
       'approval',
-      'experiment',
+      'experiment-1',
       'verification',
       'export',
     ]);
@@ -269,5 +313,38 @@ describe('durable campaign workflow', () => {
     }).run({ ...input, approval });
     expect(replayed.bundle?.manifestDigest).toBe(resumed.bundle?.manifestDigest);
     expect(executionCount).toBe(1);
+
+    const insufficientCampaign = { ...campaign(), id: 'campaign-2' };
+    const insufficientPolicy: VerificationPolicy = {
+      ...verificationPolicy,
+      measurementPredicates: [
+        {
+          predicateId: 'accuracy-threshold',
+          measurement: 'accuracy',
+          operator: 'GTE',
+          threshold: 1,
+        },
+      ],
+    };
+    const insufficientInput = {
+      ...input,
+      campaign: insufficientCampaign,
+      verificationPolicy: insufficientPolicy,
+    };
+    const insufficientWaiting = await workflow.run(insufficientInput);
+    const insufficientApproval: ApprovalArtifact = {
+      ...approval,
+      approvalId: 'approval-2',
+      actionDigest: digestAction(insufficientWaiting.proposedAction!),
+    };
+    const nextReady = await workflow.run({ ...insufficientInput, approval: insufficientApproval });
+    expect(nextReady.campaign.status).toBe('NEXT_EXPERIMENT_READY');
+    expect(nextReady.nextBestExperimentReport).toMatchObject({
+      verificationReportId: nextReady.verificationReport?.reportId,
+      unresolvedPredicateIds: ['accuracy-threshold'],
+      authority: 'ADVISORY',
+    });
+    expect(nextReady.controllerDecisions.at(-1)).toMatchObject({ decision: 'REPAIR' });
+    expect(nextReady.receipts['next-experiment']).toBeDefined();
   });
 });

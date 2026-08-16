@@ -4,10 +4,13 @@ import type {
   ApprovalArtifact,
   ArtifactReference,
   Campaign,
+  DatasetVersion,
   DomainEvent,
+  ExecutionControl,
   ProposedAction,
   ReproducibilityBundleManifest,
   TargetVersion,
+  ProjectMember,
   VerificationReport,
 } from '@alphalab/contracts';
 import type { EvidenceRecord } from '@alphalab/contracts';
@@ -51,11 +54,19 @@ export interface ControlStore {
     operation: () => Promise<T>,
   ): Promise<T>;
   createProject(record: ProjectRecord): Promise<void>;
+  createProjectMember(record: ProjectMember): Promise<void>;
+  getProjectMember(projectId: string, actorId: string): Promise<ProjectMember | undefined>;
+  listProjectMembers(projectId: string): Promise<ProjectMember[]>;
   getProject(id: string): Promise<ProjectRecord | undefined>;
   listProjects(organizationId?: string): Promise<ProjectRecord[]>;
   createTarget(record: TargetVersion): Promise<void>;
   getTarget(id: string): Promise<TargetVersion | undefined>;
   listTargets(projectId?: string, targetId?: string): Promise<TargetVersion[]>;
+  createDataset(record: DatasetVersion): Promise<void>;
+  getDataset(id: string): Promise<DatasetVersion | undefined>;
+  listDatasets(projectId?: string, datasetId?: string): Promise<DatasetVersion[]>;
+  getExecutionControl(organizationId: string): Promise<ExecutionControl | undefined>;
+  saveExecutionControl(record: ExecutionControl, expectedVersion: number): Promise<void>;
   createCampaign(record: Campaign): Promise<void>;
   getCampaign(id: string): Promise<Campaign | undefined>;
   listCampaigns(projectId?: string): Promise<Campaign[]>;
@@ -80,7 +91,10 @@ export interface ControlStore {
 export class InMemoryControlStore implements ControlStore {
   readonly eventEmitter = new EventEmitter();
   private readonly projects = new Map<string, ProjectRecord>();
+  private readonly projectMembers = new Map<string, ProjectMember>();
   private readonly targets = new Map<string, TargetVersion>();
+  private readonly datasets = new Map<string, DatasetVersion>();
+  private readonly executionControls = new Map<string, ExecutionControl>();
   private readonly campaigns = new Map<string, Campaign>();
   private readonly approvalRequests = new Map<string, ApprovalRequestRecord>();
   private readonly artifacts = new Map<string, ArtifactRecord>();
@@ -115,6 +129,25 @@ export class InMemoryControlStore implements ControlStore {
     this.projects.set(record.id, record);
   }
 
+  async createProjectMember(record: ProjectMember): Promise<void> {
+    const key = `${record.projectId}:${record.actorId}`;
+    const existing = this.projectMembers.get(key);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(record)) {
+      throw new DomainError('PROJECT_MEMBER_IMMUTABLE', 'Project membership is immutable');
+    }
+    this.projectMembers.set(key, record);
+  }
+
+  async getProjectMember(projectId: string, actorId: string): Promise<ProjectMember | undefined> {
+    return this.projectMembers.get(`${projectId}:${actorId}`);
+  }
+
+  async listProjectMembers(projectId: string): Promise<ProjectMember[]> {
+    return [...this.projectMembers.values()]
+      .filter((member) => member.projectId === projectId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
   async getProject(id: string): Promise<ProjectRecord | undefined> {
     return this.projects.get(id);
   }
@@ -139,6 +172,38 @@ export class InMemoryControlStore implements ControlStore {
         (!projectId || target.projectId === projectId) &&
         (!targetId || target.targetId === targetId),
     );
+  }
+
+  async createDataset(record: DatasetVersion): Promise<void> {
+    this.datasets.set(record.datasetVersionId, record);
+  }
+
+  async getDataset(id: string): Promise<DatasetVersion | undefined> {
+    return this.datasets.get(id);
+  }
+
+  async listDatasets(projectId?: string, datasetId?: string): Promise<DatasetVersion[]> {
+    return [...this.datasets.values()].filter(
+      (dataset) =>
+        (!projectId || dataset.projectId === projectId) &&
+        (!datasetId || dataset.datasetId === datasetId),
+    );
+  }
+
+  async getExecutionControl(organizationId: string): Promise<ExecutionControl | undefined> {
+    return this.executionControls.get(organizationId);
+  }
+
+  async saveExecutionControl(record: ExecutionControl, expectedVersion: number): Promise<void> {
+    const current = this.executionControls.get(record.organizationId);
+    const actualVersion = current?.version ?? 0;
+    if (actualVersion !== expectedVersion) {
+      throw new DomainError('CONTROL_VERSION_CONFLICT', 'Execution control version changed', {
+        expectedVersion,
+        actualVersion,
+      });
+    }
+    this.executionControls.set(record.organizationId, record);
   }
 
   async createCampaign(record: Campaign): Promise<void> {
@@ -188,7 +253,10 @@ export class InMemoryControlStore implements ControlStore {
   async createArtifact(record: ArtifactRecord): Promise<void> {
     const existing = this.artifacts.get(record.artifact.digest);
     if (existing && JSON.stringify(existing) !== JSON.stringify(record)) {
-      throw new DomainError('ARTIFACT_IMMUTABLE', `Artifact ${record.artifact.digest} already exists`);
+      throw new DomainError(
+        'ARTIFACT_IMMUTABLE',
+        `Artifact ${record.artifact.digest} already exists`,
+      );
     }
     this.artifacts.set(record.artifact.digest, record);
   }
@@ -216,7 +284,10 @@ export class InMemoryControlStore implements ControlStore {
   async createVerificationReport(report: VerificationReport): Promise<void> {
     const existing = this.verificationReports.get(report.reportId);
     if (existing && JSON.stringify(existing) !== JSON.stringify(report)) {
-      throw new DomainError('VERIFICATION_REPORT_IMMUTABLE', `Report ${report.reportId} already exists`);
+      throw new DomainError(
+        'VERIFICATION_REPORT_IMMUTABLE',
+        `Report ${report.reportId} already exists`,
+      );
     }
     this.verificationReports.set(report.reportId, report);
   }

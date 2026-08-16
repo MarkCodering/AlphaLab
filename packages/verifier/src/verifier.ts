@@ -77,6 +77,18 @@ export class DeterministicOutcomeVerifier {
       });
     }
 
+    const completeProvenance =
+      successful.length >= input.policy.requiredReproductions &&
+      successful.every(hasCompleteProvenance);
+    predicateResults.push({
+      predicateId: 'predicate-provenance-complete',
+      status: completeProvenance ? 'PASS' : 'FAIL',
+      evidenceIds: successful.map((result) => result.resultId),
+      reason: completeProvenance
+        ? 'Every successful reproduction includes verified code, model, dataset, and invocation provenance.'
+        : 'At least one successful reproduction lacks verified code, model, dataset, or invocation provenance.',
+    });
+
     for (const predicate of input.policy.measurementPredicates) {
       const values = successful.flatMap((result) =>
         result.measurements
@@ -128,6 +140,19 @@ export class DeterministicOutcomeVerifier {
       createdAt: input.createdAt ?? new Date().toISOString(),
     });
   }
+}
+
+function hasCompleteProvenance(result: ExperimentResult): boolean {
+  const provenance = result.executionProvenance;
+  return Boolean(
+    result.modelProvenance &&
+    provenance?.codeRevisionVerified &&
+    provenance.modelAdapter.adapterVersion &&
+    provenance.modelAdapter.promptTemplateVersion &&
+    provenance.datasets.length > 0 &&
+    provenance.invocation.command.length > 0 &&
+    provenance.invocation.seeds.length > 0,
+  );
 }
 
 function compare(value: number, operator: MeasurementOperator, threshold: number): boolean {

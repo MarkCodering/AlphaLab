@@ -6,17 +6,23 @@ import {
   ApprovalArtifactSchema,
   ArtifactReferenceSchema,
   CampaignSchema,
+  DatasetVersionSchema,
   DomainEventSchema,
+  ExecutionControlSchema,
   EvidenceRecordSchema,
   ProposedActionSchema,
   ReproducibilityBundleManifestSchema,
   TargetVersionSchema,
+  ProjectMemberSchema,
   VerificationReportSchema,
   type Campaign,
+  type DatasetVersion,
   type DomainEvent,
   type EvidenceRecord,
+  type ExecutionControl,
   type ReproducibilityBundleManifest,
   type TargetVersion,
+  type ProjectMember,
   type VerificationReport,
 } from '@alphalab/contracts';
 import { DomainError } from '@alphalab/domain';
@@ -81,6 +87,61 @@ export class PrismaControlStore implements ControlStore {
     });
   }
 
+  async createProjectMember(record: ProjectMember): Promise<void> {
+    const database = this.db();
+    const existing = await database.projectMember.findUnique({
+      where: { projectId_actorId: { projectId: record.projectId, actorId: record.actorId } },
+    });
+    if (existing) {
+      const current = ProjectMemberSchema.parse({
+        ...existing,
+        contractVersion: '1.0',
+        createdAt: existing.createdAt.toISOString(),
+      });
+      if (JSON.stringify(current) !== JSON.stringify(record)) {
+        throw new DomainError('PROJECT_MEMBER_IMMUTABLE', 'Project membership is immutable');
+      }
+      return;
+    }
+    await database.projectMember.create({
+      data: {
+        projectId: record.projectId,
+        actorId: record.actorId,
+        organizationId: record.organizationId,
+        role: record.role,
+        createdAt: new Date(record.createdAt),
+        createdBy: record.createdBy,
+      },
+    });
+  }
+
+  async getProjectMember(projectId: string, actorId: string): Promise<ProjectMember | undefined> {
+    const record = await this.db().projectMember.findUnique({
+      where: { projectId_actorId: { projectId, actorId } },
+    });
+    return record
+      ? ProjectMemberSchema.parse({
+          ...record,
+          contractVersion: '1.0',
+          createdAt: record.createdAt.toISOString(),
+        })
+      : undefined;
+  }
+
+  async listProjectMembers(projectId: string): Promise<ProjectMember[]> {
+    const records = await this.db().projectMember.findMany({
+      where: { projectId },
+      orderBy: { createdAt: 'asc' },
+    });
+    return records.map((record) =>
+      ProjectMemberSchema.parse({
+        ...record,
+        contractVersion: '1.0',
+        createdAt: record.createdAt.toISOString(),
+      }),
+    );
+  }
+
   async getProject(id: string): Promise<ProjectRecord | undefined> {
     const record = await this.db().project.findUnique({ where: { id } });
     return record ? { ...record, createdAt: record.createdAt.toISOString() } : undefined;
@@ -114,6 +175,83 @@ export class PrismaControlStore implements ControlStore {
       orderBy: [{ targetId: 'asc' }, { version: 'asc' }],
     });
     return records.map(targetFromDatabase);
+  }
+
+  async createDataset(record: DatasetVersion): Promise<void> {
+    await this.db().datasetVersion.create({
+      data: {
+        id: record.datasetVersionId,
+        datasetId: record.datasetId,
+        organizationId: record.organizationId,
+        projectId: record.projectId,
+        version: record.version,
+        name: record.name,
+        description: record.description,
+        format: record.format,
+        sourcePointer: record.sourcePointer,
+        license: record.license,
+        contentDigest: record.contentDigest,
+        artifact: record.artifact ? toJson(record.artifact) : Prisma.JsonNull,
+        recordCount: record.recordCount ?? null,
+        createdAt: new Date(record.createdAt),
+        createdBy: record.createdBy,
+      },
+    });
+  }
+
+  async getDataset(id: string): Promise<DatasetVersion | undefined> {
+    const record = await this.db().datasetVersion.findUnique({ where: { id } });
+    return record ? datasetFromDatabase(record) : undefined;
+  }
+
+  async listDatasets(projectId?: string, datasetId?: string): Promise<DatasetVersion[]> {
+    const records = await this.db().datasetVersion.findMany({
+      where: {
+        ...(projectId ? { projectId } : {}),
+        ...(datasetId ? { datasetId } : {}),
+      },
+      orderBy: [{ datasetId: 'asc' }, { version: 'asc' }],
+    });
+    return records.map(datasetFromDatabase);
+  }
+
+  async getExecutionControl(organizationId: string): Promise<ExecutionControl | undefined> {
+    const record = await this.db().organizationExecutionControl.findUnique({
+      where: { organizationId },
+    });
+    return record ? executionControlFromDatabase(record) : undefined;
+  }
+
+  async saveExecutionControl(record: ExecutionControl, expectedVersion: number): Promise<void> {
+    const database = this.db();
+    if (expectedVersion === 0) {
+      const existing = await database.organizationExecutionControl.findUnique({
+        where: { organizationId: record.organizationId },
+      });
+      if (!existing) {
+        await database.organizationExecutionControl.create({
+          data: executionControlToDatabase(record),
+        });
+        return;
+      }
+      throw new DomainError('CONTROL_VERSION_CONFLICT', 'Execution control version changed', {
+        expectedVersion,
+        actualVersion: existing.version,
+      });
+    }
+    const updated = await database.organizationExecutionControl.updateMany({
+      where: { organizationId: record.organizationId, version: expectedVersion },
+      data: executionControlToDatabase(record),
+    });
+    if (updated.count === 0) {
+      const current = await database.organizationExecutionControl.findUnique({
+        where: { organizationId: record.organizationId },
+      });
+      throw new DomainError('CONTROL_VERSION_CONFLICT', 'Execution control version changed', {
+        expectedVersion,
+        actualVersion: current?.version ?? 0,
+      });
+    }
   }
 
   async createCampaign(record: Campaign): Promise<void> {
@@ -201,11 +339,16 @@ export class PrismaControlStore implements ControlStore {
   }
 
   async createArtifact(record: ArtifactRecord): Promise<void> {
-    const existing = await this.db().artifact.findUnique({ where: { digest: record.artifact.digest } });
+    const existing = await this.db().artifact.findUnique({
+      where: { digest: record.artifact.digest },
+    });
     if (existing) {
       const current = artifactFromDatabase(existing);
       if (JSON.stringify(current) !== JSON.stringify(record)) {
-        throw new DomainError('ARTIFACT_IMMUTABLE', `Artifact ${record.artifact.digest} already exists`);
+        throw new DomainError(
+          'ARTIFACT_IMMUTABLE',
+          `Artifact ${record.artifact.digest} already exists`,
+        );
       }
       return;
     }
@@ -232,7 +375,9 @@ export class PrismaControlStore implements ControlStore {
   }
 
   async createEvidence(record: EvidenceRecord): Promise<void> {
-    const existing = await this.db().evidenceRecord.findUnique({ where: { id: record.evidenceId } });
+    const existing = await this.db().evidenceRecord.findUnique({
+      where: { id: record.evidenceId },
+    });
     if (existing) {
       const current = evidenceFromDatabase(existing);
       if (JSON.stringify(current) !== JSON.stringify(record)) {
@@ -271,7 +416,9 @@ export class PrismaControlStore implements ControlStore {
   }
 
   async createVerificationReport(report: VerificationReport): Promise<void> {
-    const existing = await this.db().verificationReport.findUnique({ where: { id: report.reportId } });
+    const existing = await this.db().verificationReport.findUnique({
+      where: { id: report.reportId },
+    });
     if (existing) {
       const current = verificationReportFromDatabase(existing);
       if (JSON.stringify(current) !== JSON.stringify(report)) {
@@ -307,7 +454,9 @@ export class PrismaControlStore implements ControlStore {
   }
 
   async createReproducibilityBundle(bundle: ReproducibilityBundleManifest): Promise<void> {
-    const existing = await this.db().reproducibilityBundle.findUnique({ where: { id: bundle.bundleId } });
+    const existing = await this.db().reproducibilityBundle.findUnique({
+      where: { id: bundle.bundleId },
+    });
     if (existing) {
       const current = reproducibilityBundleFromDatabase(existing);
       if (JSON.stringify(current) !== JSON.stringify(bundle)) {
@@ -392,6 +541,7 @@ function targetFromDatabase(record: {
   version: number;
   scientificGoal: string;
   researchQuestion: string;
+  initialHypotheses: string[];
   acceptanceCriteria: string[];
   verificationPolicyId: string;
   stopConditions: string[];
@@ -406,6 +556,11 @@ function campaignFromDatabase(record: {
   organizationId: string;
   projectId: string;
   targetVersionId: string;
+  datasetVersionIds: string[];
+  permittedModelIds: string[];
+  permittedToolIds: string[];
+  fallbackMode: string;
+  approvedFallbackModelIds: string[];
   status: string;
   resumeStatus: string | null;
   stateVersion: number;
@@ -418,6 +573,89 @@ function campaignFromDatabase(record: {
   return CampaignSchema.parse({
     ...record,
     createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt.toISOString(),
+  });
+}
+
+function datasetFromDatabase(record: {
+  id: string;
+  datasetId: string;
+  organizationId: string;
+  projectId: string;
+  version: number;
+  name: string;
+  description: string;
+  format: string;
+  sourcePointer: string;
+  license: string;
+  contentDigest: string;
+  artifact: Prisma.JsonValue | null;
+  recordCount: number | null;
+  createdAt: Date;
+  createdBy: string;
+}): DatasetVersion {
+  return DatasetVersionSchema.parse({
+    contractVersion: '1.0',
+    datasetVersionId: record.id,
+    datasetId: record.datasetId,
+    organizationId: record.organizationId,
+    projectId: record.projectId,
+    version: record.version,
+    name: record.name,
+    description: record.description,
+    format: record.format,
+    sourcePointer: record.sourcePointer,
+    license: record.license,
+    contentDigest: record.contentDigest,
+    ...(record.artifact ? { artifact: record.artifact } : {}),
+    ...(record.recordCount !== null ? { recordCount: record.recordCount } : {}),
+    createdAt: record.createdAt.toISOString(),
+    createdBy: record.createdBy,
+  });
+}
+
+function executionControlToDatabase(record: ExecutionControl) {
+  return {
+    organizationId: record.organizationId,
+    version: record.version,
+    campaignExecutionEnabled: record.campaignExecutionEnabled,
+    experimentExecutionEnabled: record.experimentExecutionEnabled,
+    externalNetworkAccessEnabled: record.externalNetworkAccessEnabled,
+    externalModelProvidersEnabled: record.externalModelProvidersEnabled,
+    huggingFaceModelLoadingEnabled: record.huggingFaceModelLoadingEnabled,
+    mcpIntegrationsEnabled: record.mcpIntegrationsEnabled,
+    cloudInfrastructureExecutionEnabled: record.cloudInfrastructureExecutionEnabled,
+    domainSpecificToolsEnabled: record.domainSpecificToolsEnabled,
+    verifiedDiscoveryGenerationEnabled: record.verifiedDiscoveryGenerationEnabled,
+    automaticFallbackEnabled: record.automaticFallbackEnabled,
+    backgroundSchedulingEnabled: record.backgroundSchedulingEnabled,
+    evidenceReadOnly: record.evidenceReadOnly,
+    updatedAt: new Date(record.updatedAt),
+    updatedBy: record.updatedBy,
+  };
+}
+
+function executionControlFromDatabase(record: {
+  organizationId: string;
+  version: number;
+  campaignExecutionEnabled: boolean;
+  experimentExecutionEnabled: boolean;
+  externalNetworkAccessEnabled: boolean;
+  externalModelProvidersEnabled: boolean;
+  huggingFaceModelLoadingEnabled: boolean;
+  mcpIntegrationsEnabled: boolean;
+  cloudInfrastructureExecutionEnabled: boolean;
+  domainSpecificToolsEnabled: boolean;
+  verifiedDiscoveryGenerationEnabled: boolean;
+  automaticFallbackEnabled: boolean;
+  backgroundSchedulingEnabled: boolean;
+  evidenceReadOnly: boolean;
+  updatedAt: Date;
+  updatedBy: string;
+}): ExecutionControl {
+  return ExecutionControlSchema.parse({
+    contractVersion: '1.0',
+    ...record,
     updatedAt: record.updatedAt.toISOString(),
   });
 }

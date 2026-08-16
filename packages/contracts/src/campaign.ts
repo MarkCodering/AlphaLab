@@ -47,6 +47,21 @@ export const BudgetUsageSchema = z.object({
 });
 export type BudgetUsage = z.infer<typeof BudgetUsageSchema>;
 
+export const CampaignRuntimePolicySchema = z.object({
+  permittedModelIds: z.array(IdentifierSchema).min(1),
+  permittedToolIds: z.array(IdentifierSchema).min(1),
+  fallbackMode: z.enum(['STOP', 'APPROVED_ONLY']),
+  approvedFallbackModelIds: z.array(IdentifierSchema),
+});
+export type CampaignRuntimePolicy = z.infer<typeof CampaignRuntimePolicySchema>;
+
+export const DEFAULT_REFERENCE_RUNTIME_POLICY = {
+  permittedModelIds: ['reference-local-worker-model-v1', 'deterministic-statistics-v1'],
+  permittedToolIds: ['reference-local-executor-v1'],
+  fallbackMode: 'STOP',
+  approvedFallbackModelIds: [],
+} as const satisfies CampaignRuntimePolicy;
+
 export const TargetVersionSchema = z.object({
   id: IdentifierSchema,
   organizationId: IdentifierSchema,
@@ -55,6 +70,7 @@ export const TargetVersionSchema = z.object({
   version: z.number().int().positive(),
   scientificGoal: z.string().min(1),
   researchQuestion: z.string().min(1),
+  initialHypotheses: z.array(z.string().min(1)).default([]),
   acceptanceCriteria: z.array(z.string().min(1)).min(1),
   verificationPolicyId: IdentifierSchema,
   stopConditions: z.array(z.string().min(1)).min(1),
@@ -68,6 +84,21 @@ export const CampaignSchema = z.object({
   organizationId: IdentifierSchema,
   projectId: IdentifierSchema,
   targetVersionId: IdentifierSchema,
+  datasetVersionIds: z.array(IdentifierSchema).default([]),
+  permittedModelIds: z
+    .array(IdentifierSchema)
+    .min(1)
+    .default([...DEFAULT_REFERENCE_RUNTIME_POLICY.permittedModelIds]),
+  permittedToolIds: z
+    .array(IdentifierSchema)
+    .min(1)
+    .default([...DEFAULT_REFERENCE_RUNTIME_POLICY.permittedToolIds]),
+  fallbackMode: z
+    .enum(['STOP', 'APPROVED_ONLY'])
+    .default(DEFAULT_REFERENCE_RUNTIME_POLICY.fallbackMode),
+  approvedFallbackModelIds: z
+    .array(IdentifierSchema)
+    .default([...DEFAULT_REFERENCE_RUNTIME_POLICY.approvedFallbackModelIds]),
   status: CampaignStatusSchema,
   resumeStatus: CampaignStatusSchema.nullable(),
   stateVersion: z.number().int().nonnegative(),

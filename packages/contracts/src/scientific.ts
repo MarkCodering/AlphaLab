@@ -47,6 +47,34 @@ export const MeasurementSchema = z.object({
 });
 export type Measurement = z.infer<typeof MeasurementSchema>;
 
+export const ExperimentExecutionProvenanceSchema = z.object({
+  codeRevision: z.string().min(1),
+  codeRevisionVerified: z.boolean(),
+  modelAdapter: z.object({
+    providerId: IdentifierSchema,
+    modelId: IdentifierSchema,
+    modelRevisionDigest: DigestSchema,
+    adapterVersion: z.string().min(1),
+    promptTemplateVersion: z.string().min(1),
+  }),
+  datasets: z
+    .array(
+      z.object({
+        datasetVersionId: IdentifierSchema,
+        contentDigest: DigestSchema,
+      }),
+    )
+    .min(1),
+  invocation: z.object({
+    imageReference: z.string().regex(/^[^\s@]+@sha256:[a-f0-9]{64}$/),
+    imageDigest: DigestSchema,
+    command: z.array(z.string()).min(1),
+    parameters: z.record(z.string(), z.unknown()),
+    seeds: z.array(z.number().int()).min(1),
+  }),
+});
+export type ExperimentExecutionProvenance = z.infer<typeof ExperimentExecutionProvenanceSchema>;
+
 export const ExperimentResultSchema = z.object({
   resultId: IdentifierSchema,
   experimentRunId: IdentifierSchema,
@@ -54,6 +82,15 @@ export const ExperimentResultSchema = z.object({
   status: z.enum(['SUCCEEDED', 'FAILED', 'CANCELLED']),
   measurements: z.array(MeasurementSchema),
   artifacts: z.array(ArtifactReferenceSchema),
+  modelProvenance: z
+    .object({
+      providerId: IdentifierSchema,
+      modelId: IdentifierSchema,
+      modelRevisionDigest: DigestSchema,
+      normalizedResultDigest: DigestSchema,
+    })
+    .optional(),
+  executionProvenance: ExperimentExecutionProvenanceSchema.optional(),
   normalizedResultDigest: DigestSchema.optional(),
   environmentDigest: DigestSchema,
   startedAt: TimestampSchema,
@@ -102,6 +139,30 @@ export const ControllerDecisionSchema = z.object({
   createdAt: TimestampSchema,
 });
 export type ControllerDecision = z.infer<typeof ControllerDecisionSchema>;
+
+/**
+ * An advisory recommendation emitted when verification does not establish a
+ * candidate. It deliberately contains no executable command: any follow-on
+ * experiment must still be planned, policy-checked, and approved separately.
+ */
+export const NextBestExperimentReportSchema = z.object({
+  contractVersion: ContractVersionSchema,
+  reportId: IdentifierSchema,
+  organizationId: IdentifierSchema,
+  projectId: IdentifierSchema,
+  campaignId: IdentifierSchema,
+  runId: IdentifierSchema,
+  hypothesisId: IdentifierSchema.optional(),
+  verificationReportId: IdentifierSchema,
+  summary: z.string().min(1),
+  unresolvedPredicateIds: z.array(IdentifierSchema).min(1),
+  evidenceGaps: z.array(z.string().min(1)).min(1),
+  recommendedObjective: z.string().min(1),
+  rationale: z.string().min(1),
+  authority: z.literal('ADVISORY'),
+  createdAt: TimestampSchema,
+});
+export type NextBestExperimentReport = z.infer<typeof NextBestExperimentReportSchema>;
 
 export const ContextCapsuleSchema = z.object({
   contractVersion: ContractVersionSchema,
@@ -160,6 +221,25 @@ export const ReproducibilityBundleManifestSchema = z.object({
     command: z.array(z.string()).min(1),
     parameters: z.record(z.string(), z.unknown()),
     seeds: z.array(z.number().int()),
+    codeRevision: z.string().min(1).optional(),
+    codeRevisionVerified: z.boolean().optional(),
+    modelAdapter: z
+      .object({
+        providerId: IdentifierSchema,
+        modelId: IdentifierSchema,
+        modelRevisionDigest: DigestSchema,
+        adapterVersion: z.string().min(1),
+        promptTemplateVersion: z.string().min(1),
+      })
+      .optional(),
+    datasets: z
+      .array(
+        z.object({
+          datasetVersionId: IdentifierSchema,
+          contentDigest: DigestSchema,
+        }),
+      )
+      .optional(),
   }),
   normalizedResultDigest: DigestSchema,
   manifestDigest: DigestSchema.optional(),

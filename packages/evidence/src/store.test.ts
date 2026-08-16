@@ -65,4 +65,18 @@ describe('content-addressed evidence', () => {
     await writeFile(join(exported.directory, 'artifacts', artifact.artifactId), 'tampered');
     await expect(exporter.verify(exported.directory)).rejects.toBeInstanceOf(EvidenceStoreError);
   });
+
+  it('retrieves content by its immutable digest and rejects malformed digests', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'alphalab-evidence-test-'));
+    roots.push(root);
+    const store = new LocalArtifactStore(join(root, 'store'));
+    const artifact = await store.putBytes(Buffer.from('immutable evidence\n'), 'text/plain');
+
+    await expect(store.getBytesByDigest(artifact.digest)).resolves.toEqual(
+      Buffer.from('immutable evidence\n'),
+    );
+    await expect(store.getBytesByDigest('sha256:not-a-digest')).rejects.toMatchObject({
+      code: 'DIGEST_INVALID',
+    });
+  });
 });

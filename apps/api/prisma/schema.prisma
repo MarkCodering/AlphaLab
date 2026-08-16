@@ -17,9 +17,24 @@ model Project {
   description    String   @default("")
   createdAt      DateTime @map("created_at") @db.Timestamptz(6)
   createdBy      String   @map("created_by")
+  members        ProjectMember[]
 
   @@index([organizationId])
   @@map("projects")
+}
+
+model ProjectMember {
+  projectId      String   @map("project_id")
+  actorId        String   @map("actor_id")
+  organizationId String   @map("organization_id")
+  role           String
+  createdAt      DateTime @map("created_at") @db.Timestamptz(6)
+  createdBy      String   @map("created_by")
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, actorId])
+  @@index([actorId, organizationId])
+  @@map("project_members")
 }
 
 model TargetVersion {
@@ -30,6 +45,7 @@ model TargetVersion {
   version              Int
   scientificGoal       String   @map("scientific_goal")
   researchQuestion     String   @map("research_question")
+  initialHypotheses    String[] @default([]) @map("initial_hypotheses")
   acceptanceCriteria   String[] @map("acceptance_criteria")
   verificationPolicyId String   @map("verification_policy_id")
   stopConditions       String[] @map("stop_conditions")
@@ -41,19 +57,67 @@ model TargetVersion {
   @@map("target_versions")
 }
 
+model DatasetVersion {
+  id             String   @id
+  datasetId      String   @map("dataset_id")
+  organizationId String   @map("organization_id")
+  projectId      String   @map("project_id")
+  version        Int
+  name           String
+  description    String
+  format         String
+  sourcePointer  String   @map("source_pointer")
+  license        String
+  contentDigest  String   @map("content_digest")
+  artifact       Json?
+  recordCount    Int?     @map("record_count")
+  createdAt      DateTime @map("created_at") @db.Timestamptz(6)
+  createdBy      String   @map("created_by")
+
+  @@unique([datasetId, version])
+  @@index([projectId, datasetId])
+  @@map("dataset_versions")
+}
+
+model OrganizationExecutionControl {
+  organizationId                      String   @id @map("organization_id")
+  version                             Int
+  campaignExecutionEnabled            Boolean  @map("campaign_execution_enabled")
+  experimentExecutionEnabled          Boolean  @map("experiment_execution_enabled")
+  externalNetworkAccessEnabled        Boolean  @map("external_network_access_enabled")
+  externalModelProvidersEnabled       Boolean  @map("external_model_providers_enabled")
+  huggingFaceModelLoadingEnabled      Boolean  @map("hugging_face_model_loading_enabled")
+  mcpIntegrationsEnabled              Boolean  @map("mcp_integrations_enabled")
+  cloudInfrastructureExecutionEnabled Boolean  @map("cloud_infrastructure_execution_enabled")
+  domainSpecificToolsEnabled          Boolean  @map("domain_specific_tools_enabled")
+  verifiedDiscoveryGenerationEnabled  Boolean  @map("verified_discovery_generation_enabled")
+  automaticFallbackEnabled            Boolean  @map("automatic_fallback_enabled")
+  backgroundSchedulingEnabled         Boolean  @map("background_scheduling_enabled")
+  evidenceReadOnly                    Boolean  @map("evidence_read_only")
+  updatedAt                           DateTime @map("updated_at") @db.Timestamptz(6)
+  updatedBy                           String   @map("updated_by")
+
+  @@map("organization_execution_controls")
+}
+
 model Campaign {
-  id              String   @id
-  organizationId  String   @map("organization_id")
-  projectId       String   @map("project_id")
-  targetVersionId String   @map("target_version_id")
-  status          String
-  resumeStatus    String?  @map("resume_status")
-  stateVersion    Int      @map("state_version")
-  budgetVersion   Int      @map("budget_version")
-  budgetLimit     Json     @map("budget_limit")
-  budgetUsage     Json     @map("budget_usage")
-  createdAt       DateTime @map("created_at") @db.Timestamptz(6)
-  updatedAt       DateTime @map("updated_at") @db.Timestamptz(6)
+  id                String   @id
+  organizationId    String   @map("organization_id")
+  projectId         String   @map("project_id")
+  targetVersionId   String   @map("target_version_id")
+  datasetVersionIds String[] @default([]) @map("dataset_version_ids")
+  permittedModelIds String[] @default(["reference-local-worker-model-v1", "deterministic-statistics-v1"]) @map("permitted_model_ids")
+  permittedToolIds  String[] @default(["reference-local-executor-v1"]) @map("permitted_tool_ids")
+  fallbackMode      String   @default("STOP") @map("fallback_mode")
+  approvedFallbackModelIds String[] @default([]) @map("approved_fallback_model_ids")
+  status            String
+  resumeStatus      String?  @map("resume_status")
+  stateVersion      Int      @map("state_version")
+  budgetVersion     Int      @map("budget_version")
+  budgetLimit       Json     @map("budget_limit")
+  budgetUsage       Json     @map("budget_usage")
+  createdAt         DateTime @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @map("updated_at") @db.Timestamptz(6)
 
   @@index([projectId, status])
   @@map("campaigns")
@@ -101,15 +165,15 @@ model ApprovalRequest {
 }
 
 model SideEffectReceipt {
-  invocationId   String   @id @map("invocation_id")
-  campaignId     String   @map("campaign_id")
-  kind           String
-  requestDigest  String   @map("request_digest")
-  status         String
-  resultReference Json?   @map("result_reference")
-  usage          Json?
-  startedAt      DateTime @map("started_at") @db.Timestamptz(6)
-  completedAt    DateTime? @map("completed_at") @db.Timestamptz(6)
+  invocationId    String    @id @map("invocation_id")
+  campaignId      String    @map("campaign_id")
+  kind            String
+  requestDigest   String    @map("request_digest")
+  status          String
+  resultReference Json?     @map("result_reference")
+  usage           Json?
+  startedAt       DateTime  @map("started_at") @db.Timestamptz(6)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz(6)
 
   @@index([campaignId, kind])
   @@map("side_effect_receipts")
@@ -130,22 +194,22 @@ model Artifact {
 }
 
 model EvidenceRecord {
-  id                   String   @id
-  organizationId       String   @map("organization_id")
-  projectId            String   @map("project_id")
-  campaignId           String   @map("campaign_id")
-  runId                String   @map("run_id")
-  targetVersionId      String   @map("target_version_id")
-  classification       String
-  statement            String
-  artifactDigests      String[] @map("artifact_digests")
-  supportsClaimIds     String[] @map("supports_claim_ids")
-  contradictsClaimIds  String[] @map("contradicts_claim_ids")
-  sourcePointers       String[] @map("source_pointers")
-  provenance           Json
-  status               String
-  invalidatesId        String?  @map("invalidates_id")
-  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                  String   @id
+  organizationId      String   @map("organization_id")
+  projectId           String   @map("project_id")
+  campaignId          String   @map("campaign_id")
+  runId               String   @map("run_id")
+  targetVersionId     String   @map("target_version_id")
+  classification      String
+  statement           String
+  artifactDigests     String[] @map("artifact_digests")
+  supportsClaimIds    String[] @map("supports_claim_ids")
+  contradictsClaimIds String[] @map("contradicts_claim_ids")
+  sourcePointers      String[] @map("source_pointers")
+  provenance          Json
+  status              String
+  invalidatesId       String?  @map("invalidates_id")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([campaignId, classification])
   @@map("evidence_records")
@@ -182,11 +246,11 @@ model ReproducibilityBundle {
 }
 
 model OutboxEvent {
-  id          String   @id
-  aggregateId String   @map("aggregate_id")
-  eventType   String   @map("event_type")
+  id          String    @id
+  aggregateId String    @map("aggregate_id")
+  eventType   String    @map("event_type")
   payload     Json
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
 
   @@index([publishedAt, createdAt])

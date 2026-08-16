@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
-import { ReferenceWorkflowRunner } from './reference-runner.js';
+import { LocalArtifactStore } from '@alphalab/evidence';
+import { referenceExecutorManifest, ReferenceWorkflowRunner } from './reference-runner.js';
 
 const stateDirectory = resolve(process.env.ALPHALAB_WORKFLOW_STATE ?? './data/workflows');
 const port = Number.parseInt(process.env.ALPHALAB_WORKER_PORT ?? '4311', 10);
@@ -12,11 +13,34 @@ const readyPayload = {
   stateDirectory,
 } as const;
 const referenceRunner = new ReferenceWorkflowRunner(stateDirectory);
+const artifactStore = new LocalArtifactStore(`${stateDirectory}/artifacts`);
 
 const server = createServer(async (request, response) => {
   if (request.method === 'GET' && request.url === '/v1/health') {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify(readyPayload));
+    return;
+  }
+  if (request.method === 'GET' && request.url === '/v1/executors') {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify([referenceExecutorManifest]));
+    return;
+  }
+  const artifactMatch = request.url?.match(/^\/v1\/artifacts\/([^/?]+)$/);
+  if (request.method === 'GET' && artifactMatch) {
+    try {
+      const digest = decodeURIComponent(artifactMatch[1]!);
+      const bytes = await artifactStore.getBytesByDigest(digest);
+      response.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-length': bytes.byteLength,
+        'x-content-digest': digest,
+      });
+      response.end(bytes);
+    } catch {
+      response.writeHead(404, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ code: 'ARTIFACT_NOT_FOUND' }));
+    }
     return;
   }
   const runMatch = request.url?.match(/^\/v1\/reference-runs\/([^/?]+)$/);

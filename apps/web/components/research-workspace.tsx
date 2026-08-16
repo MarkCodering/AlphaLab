@@ -41,13 +41,22 @@ import { controlApi } from '../lib/api';
 import { budgetPercent, campaignTone, setupSequence, shortId } from '../lib/campaign';
 import type {
   ApprovalRequestRecord,
+  ArtifactRecord,
   CampaignRecord,
+  CampaignWorkflowRecord,
+  DatasetVersion,
   DomainEvent,
+  EvidenceRecord,
+  ExecutionControl,
+  ModelManifest,
+  ProjectMember,
   ProjectRecord,
+  ReproducibilityBundleManifest,
   TargetVersion,
+  VerificationReport,
 } from '../lib/types';
 
-type View = 'workspace' | 'approvals' | 'evidence' | 'audit' | 'runtime';
+type View = 'workspace' | 'datasets' | 'approvals' | 'evidence' | 'audit' | 'runtime';
 type HealthState = 'checking' | 'online' | 'offline';
 
 const organizationId = 'local-organization';
@@ -58,8 +67,9 @@ const navItems: Array<{
   icon: typeof LayoutDashboard;
 }> = [
   { id: 'workspace', label: 'Campaigns', icon: LayoutDashboard },
+  { id: 'datasets', label: 'Datasets', icon: Database },
   { id: 'approvals', label: 'Approvals', icon: ShieldCheck },
-  { id: 'evidence', label: 'Evidence', icon: Database },
+  { id: 'evidence', label: 'Evidence', icon: BookOpenText },
   { id: 'audit', label: 'Audit trail', icon: FileCheck2 },
   { id: 'runtime', label: 'Runtime', icon: ServerCog },
 ];
@@ -67,7 +77,12 @@ const navItems: Array<{
 const transitionActions: Partial<
   Record<
     CampaignRecord['status'],
-    { label: string; to: CampaignRecord['status']; predicates: Record<string, boolean> }
+    {
+      label: string;
+      to: CampaignRecord['status'];
+      predicates: Record<string, boolean>;
+      actor?: { id: string; role: 'RESEARCHER' | 'SCIENTIFIC_REVIEWER' };
+    }
   >
 > = {
   DRAFT: { label: 'Submit target', to: 'TARGET_REVIEW', predicates: { targetComplete: true } },
@@ -79,7 +94,25 @@ const transitionActions: Partial<
   READY_FOR_ROUTE: { label: 'Generate route', to: 'ROUTE_REVIEW', predicates: {} },
   ROUTE_REVIEW: { label: 'Approve route', to: 'READY', predicates: { routeApproved: true } },
   READY: { label: 'Launch campaign', to: 'RUNNING', predicates: { budgetReserved: true } },
+  DISCOVERY_CANDIDATE: {
+    label: 'Record scientific acceptance',
+    to: 'VERIFIED',
+    predicates: {
+      provenanceComplete: true,
+      verificationPassed: true,
+      humanScientificApproval: true,
+    },
+    actor: { id: 'local-scientific-reviewer', role: 'SCIENTIFIC_REVIEWER' },
+  },
 };
+
+const archivableCampaignStatuses: CampaignRecord['status'][] = [
+  'VERIFIED',
+  'CANCELLED',
+  'FAILED',
+  'BUDGET_EXHAUSTED',
+  'CONTRADICTION',
+];
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat('en', {
@@ -94,16 +127,62 @@ function labelize(value: string): string {
   return value.toLowerCase().replaceAll('_', ' ');
 }
 
+function downloadJson(value: unknown, filename: string): void {
+  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: 'application/json' });
+  downloadBlob(blob, filename);
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function artifactLineage(record: ArtifactRecord): string | null {
+  const provenance = record.provenance.executionProvenance;
+  if (!provenance || typeof provenance !== 'object') return null;
+  const values = provenance as Record<string, unknown>;
+  const revision = typeof values.codeRevision === 'string' ? values.codeRevision : null;
+  const verified = values.codeRevisionVerified === true;
+  const adapter =
+    values.modelAdapter && typeof values.modelAdapter === 'object'
+      ? (values.modelAdapter as Record<string, unknown>)
+      : null;
+  const model = typeof adapter?.modelId === 'string' ? adapter.modelId : null;
+  const datasets = Array.isArray(values.datasets) ? values.datasets.length : 0;
+  if (!revision && !model && datasets === 0) return null;
+  const source = revision
+    ? `${verified ? 'verified' : 'unverified'} source ${shortId(revision)}`
+    : 'source revision unavailable';
+  return [source, model ? `adapter ${model}` : null, datasets ? `${datasets} frozen input` : null]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 export function ResearchWorkspace() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [targets, setTargets] = useState<TargetVersion[]>([]);
+  const [datasets, setDatasets] = useState<DatasetVersion[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignRecord[]>([]);
+  const [workflowRecord, setWorkflowRecord] = useState<CampaignWorkflowRecord | null>(null);
   const [approvals, setApprovals] = useState<ApprovalRequestRecord[]>([]);
   const [events, setEvents] = useState<DomainEvent[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
+  const [evidence, setEvidence] = useState<EvidenceRecord[]>([]);
+  const [verificationReports, setVerificationReports] = useState<VerificationReport[]>([]);
+  const [reproducibilityBundles, setReproducibilityBundles] = useState<
+    ReproducibilityBundleManifest[]
+  >([]);
   const [health, setHealth] = useState<HealthState>('checking');
   const [runtimeHealth, setRuntimeHealth] = useState<
     Record<'worker' | 'model' | 'experiment' | 'verifier', HealthState>
   >({ worker: 'checking', model: 'checking', experiment: 'checking', verifier: 'checking' });
+  const [modelManifests, setModelManifests] = useState<ModelManifest[]>([]);
+  const [executionControl, setExecutionControl] = useState<ExecutionControl | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>('workspace');
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -133,14 +212,23 @@ export function ResearchWorkspace() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextProjects, nextCampaigns, nextApprovals, serviceHealth, nextRuntimeHealth] =
-        await Promise.all([
-          controlApi.projects(),
-          controlApi.campaigns(),
-          controlApi.approvals(),
-          controlApi.health(),
-          controlApi.runtimeHealth(),
-        ]);
+      const [
+        nextProjects,
+        nextCampaigns,
+        nextApprovals,
+        serviceHealth,
+        nextRuntimeHealth,
+        nextModels,
+        nextExecutionControl,
+      ] = await Promise.all([
+        controlApi.projects(),
+        controlApi.campaigns(),
+        controlApi.approvals(),
+        controlApi.health(),
+        controlApi.runtimeHealth(),
+        controlApi.modelManifests().catch(() => []),
+        controlApi.executionControl(organizationId).catch(() => null),
+      ]);
       setProjects(nextProjects);
       setCampaigns(nextCampaigns);
       setApprovals(nextApprovals);
@@ -153,18 +241,60 @@ export function ResearchWorkspace() {
           ]),
         ) as Record<'worker' | 'model' | 'experiment' | 'verifier', HealthState>,
       );
+      setModelManifests(nextModels);
+      setExecutionControl(nextExecutionControl);
       const activeId = selectedId ?? nextCampaigns[0]?.id;
       if (activeId) {
         setSelectedId(activeId);
         const active = nextCampaigns.find((campaign) => campaign.id === activeId);
-        const [nextEvents, nextTargets] = await Promise.all([
+        const [
+          nextEvents,
+          nextTargets,
+          nextDatasets,
+          nextEvidence,
+          nextReports,
+          nextBundles,
+          nextArtifacts,
+          nextMembers,
+          nextWorkflow,
+        ] = await Promise.all([
           controlApi.events(activeId),
           active ? controlApi.targets(active.projectId) : Promise.resolve([]),
+          active ? controlApi.datasets(active.projectId) : Promise.resolve([]),
+          controlApi.evidence(activeId),
+          controlApi.verificationReports(activeId),
+          controlApi.reproducibilityBundles(activeId),
+          active ? controlApi.artifacts(active.projectId) : Promise.resolve([]),
+          active ? controlApi.projectMembers(active.projectId) : Promise.resolve([]),
+          controlApi.workflow(activeId).catch(() => null),
         ]);
         setEvents(nextEvents);
         setTargets(nextTargets);
+        setDatasets(nextDatasets);
+        setEvidence(nextEvidence);
+        setVerificationReports(nextReports);
+        setReproducibilityBundles(nextBundles);
+        setArtifacts(nextArtifacts);
+        setProjectMembers(nextMembers);
+        setWorkflowRecord(nextWorkflow);
       } else if (nextProjects[0]) {
-        setTargets(await controlApi.targets(nextProjects[0].id));
+        const [nextTargets, nextDatasets, nextMembers] = await Promise.all([
+          controlApi.targets(nextProjects[0].id),
+          controlApi.datasets(nextProjects[0].id),
+          controlApi.projectMembers(nextProjects[0].id),
+        ]);
+        setTargets(nextTargets);
+        setDatasets(nextDatasets);
+        setProjectMembers(nextMembers);
+        setEvents([]);
+        setEvidence([]);
+        setVerificationReports([]);
+        setReproducibilityBundles([]);
+        setArtifacts([]);
+        setWorkflowRecord(null);
+      } else {
+        setProjectMembers([]);
+        setWorkflowRecord(null);
       }
       setError(null);
     } catch (cause) {
@@ -181,7 +311,9 @@ export function ResearchWorkspace() {
 
   useEffect(() => {
     if (!selectedCampaign) return;
-    const stream = new EventSource(`/api/control/campaigns/${selectedCampaign.id}/stream`);
+    const stream = new EventSource(
+      `/api/control/campaigns/${selectedCampaign.id}/stream?actorId=local-researcher&actorRole=RESEARCHER`,
+    );
     stream.onmessage = () => void refresh();
     const eventNames = [
       'campaign.created',
@@ -195,6 +327,9 @@ export function ResearchWorkspace() {
       'campaign.cancelled',
       'approval.requested',
       'experiment.completed',
+      'evidence.intake.recorded',
+      'evidence.lineage.recorded',
+      'bundle.exported',
     ];
     eventNames.forEach((name) => stream.addEventListener(name, () => void refresh()));
     return () => stream.close();
@@ -216,6 +351,10 @@ export function ResearchWorkspace() {
         projectId: project.id,
         scientificGoal: String(data.get('scientificGoal')),
         researchQuestion: String(data.get('researchQuestion')),
+        initialHypotheses: String(data.get('initialHypotheses'))
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
         acceptanceCriteria: String(data.get('acceptanceCriteria'))
           .split('\n')
           .map((line) => line.trim())
@@ -226,10 +365,29 @@ export function ResearchWorkspace() {
           .map((line) => line.trim())
           .filter(Boolean),
       });
+      const dataset = await controlApi.createDataset({
+        organizationId,
+        projectId: project.id,
+        name: String(data.get('datasetName')),
+        description: String(data.get('datasetDescription')),
+        format: String(data.get('datasetFormat')) as DatasetVersion['format'],
+        sourcePointer: String(data.get('datasetSourcePointer')),
+        license: String(data.get('datasetLicense')),
+        contentDigest: String(data.get('datasetContentDigest')) as `sha256:${string}`,
+        recordCount: Number(data.get('datasetRecordCount')),
+      });
       const campaign = await controlApi.createCampaign({
         organizationId,
         projectId: project.id,
         targetVersionId: target.id,
+        datasetVersionIds: [dataset.datasetVersionId],
+        permittedModelIds: [
+          'reference-local-worker-model-v1',
+          String(data.get('permittedModelId')),
+        ],
+        permittedToolIds: [String(data.get('permittedToolId'))],
+        fallbackMode: 'STOP',
+        approvedFallbackModelIds: [],
         budgetLimit: {
           wallClockSeconds: Number(data.get('wallClockSeconds')),
           modelCalls: Number(data.get('modelCalls')),
@@ -239,6 +397,20 @@ export function ResearchWorkspace() {
           parallelChildren: 1,
         },
       });
+      const initialEvidence = String(data.get('initialEvidence')).trim();
+      if (initialEvidence) {
+        const sourcePointers = String(data.get('initialEvidenceSource'))
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean);
+        await controlApi.createEvidence(campaign.id, {
+          type: 'OBSERVATION',
+          statement: initialEvidence,
+          sourcePointers,
+          supportsClaimIds: [],
+          contradictsClaimIds: [],
+        });
+      }
       setSelectedId(campaign.id);
       setCreatorOpen(false);
       await refresh();
@@ -249,16 +421,103 @@ export function ResearchWorkspace() {
     }
   }
 
+  async function createDataset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedProject) {
+      setError('Create a project before registering a dataset.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const data = new FormData(event.currentTarget);
+    try {
+      await controlApi.createDataset({
+        organizationId: selectedProject.organizationId,
+        projectId: selectedProject.id,
+        name: String(data.get('name')),
+        description: String(data.get('description')),
+        format: String(data.get('format')) as DatasetVersion['format'],
+        sourcePointer: String(data.get('sourcePointer')),
+        license: String(data.get('license')),
+        contentDigest: String(data.get('contentDigest')) as `sha256:${string}`,
+        recordCount: Number(data.get('recordCount')),
+      });
+      await refresh();
+      event.currentTarget.reset();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Dataset registration failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createEvidence(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedCampaign) {
+      setError('Create a campaign before registering scientific evidence.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const data = new FormData(event.currentTarget);
+    try {
+      await controlApi.createEvidence(selectedCampaign.id, {
+        type: String(data.get('type')) as EvidenceRecord['type'],
+        statement: String(data.get('statement')),
+        sourcePointers: String(data.get('sourcePointers'))
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
+        supportsClaimIds: [],
+        contradictsClaimIds: [],
+      });
+      event.currentTarget.reset();
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not retain the evidence record.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function grantProjectMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedProject) {
+      setError('Create a project before assigning project access.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const data = new FormData(event.currentTarget);
+    try {
+      await controlApi.grantProjectMember(selectedProject.id, {
+        actorId: String(data.get('actorId')),
+        role: String(data.get('role')) as 'RESEARCHER' | 'SCIENTIFIC_REVIEWER' | 'VIEWER',
+      });
+      event.currentTarget.reset();
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not grant project access.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function transition(
     to: CampaignRecord['status'],
     predicates: Record<string, boolean>,
     reason: string,
+    actor?: { id: string; role: 'RESEARCHER' | 'SCIENTIFIC_REVIEWER' },
   ) {
     if (!selectedCampaign) return;
     setBusy(true);
     setError(null);
     try {
-      const updated = await controlApi.transition(selectedCampaign, { to, predicates, reason });
+      const updated = await controlApi.transition(
+        selectedCampaign,
+        { to, predicates, reason },
+        actor,
+      );
       setCampaigns((current) =>
         current.map((campaign) => (campaign.id === updated.id ? updated : campaign)),
       );
@@ -291,8 +550,9 @@ export function ResearchWorkspace() {
         request.id,
         decision,
         decision === 'APPROVED'
-          ? 'Reviewed and authorized by the local researcher.'
-          : 'Rejected by the local researcher pending a safer plan.',
+          ? 'Reviewed and authorized by the local scientific reviewer.'
+          : 'Rejected by the local scientific reviewer pending a safer plan.',
+        { id: 'local-scientific-reviewer', role: 'SCIENTIFIC_REVIEWER' },
       );
       await refresh();
     } catch (cause) {
@@ -302,10 +562,33 @@ export function ResearchWorkspace() {
     }
   }
 
+  async function downloadArtifact(record: ArtifactRecord) {
+    if (!selectedProject) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const blob = await controlApi.artifactDownload(selectedProject.id, record.artifact.digest);
+      const extension = record.artifact.mediaType === 'application/json' ? '.json' : '';
+      downloadBlob(blob, `${record.artifact.artifactId}${extension}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Artifact download failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const setupIndex = selectedCampaign
     ? setupSequence.indexOf(selectedCampaign.status as (typeof setupSequence)[number])
     : -1;
   const nextAction = selectedCampaign ? transitionActions[selectedCampaign.status] : undefined;
+  const hasArtifacts = artifacts.length > 0;
+  const hasReproductions = reproducibilityBundles.some(
+    (bundle) => bundle.invocation.seeds.length >= 3,
+  );
+  const hasIndependentVerification = verificationReports.some(
+    (report) => report.status === 'VERIFIED',
+  );
+  const latestBundle = reproducibilityBundles.at(-1);
 
   return (
     <div className="app-shell">
@@ -507,7 +790,39 @@ export function ResearchWorkspace() {
                       Cancel
                     </button>
                   )}
-                  <button className="icon-button">
+                  {archivableCampaignStatuses.includes(selectedCampaign.status) && (
+                    <button
+                      className="ghost"
+                      disabled={busy}
+                      onClick={() =>
+                        void transition(
+                          'ARCHIVED',
+                          {},
+                          'Archived by the researcher; evidence remains retained.',
+                        )
+                      }
+                    >
+                      <Archive size={14} />
+                      Archive
+                    </button>
+                  )}
+                  <button
+                    className="icon-button"
+                    disabled={!latestBundle}
+                    onClick={() =>
+                      latestBundle &&
+                      downloadJson(
+                        latestBundle,
+                        `alphalab-reproducibility-manifest-${latestBundle.bundleId}.json`,
+                      )
+                    }
+                    aria-label="Download reproducibility manifest"
+                    title={
+                      latestBundle
+                        ? 'Download reproducibility manifest'
+                        : 'No reproducibility manifest is available yet'
+                    }
+                  >
                     <Download size={16} />
                   </button>
                 </div>
@@ -522,6 +837,16 @@ export function ResearchWorkspace() {
                   percent={budgetPercent(
                     selectedCampaign.budgetUsage.modelCalls,
                     selectedCampaign.budgetLimit.modelCalls,
+                  )}
+                />
+                <Metric
+                  icon={Network}
+                  label="Tokens"
+                  value={`${selectedCampaign.budgetUsage.tokens}`}
+                  detail={`of ${selectedCampaign.budgetLimit.tokens}`}
+                  percent={budgetPercent(
+                    selectedCampaign.budgetUsage.tokens,
+                    selectedCampaign.budgetLimit.tokens,
                   )}
                 />
                 <Metric
@@ -620,7 +945,11 @@ export function ResearchWorkspace() {
                         <div>
                           <CircleDot size={17} />
                           <span>
-                            <strong>Next controlled transition</strong>
+                            <strong>
+                              {nextAction.actor?.role === 'SCIENTIFIC_REVIEWER'
+                                ? 'Scientific reviewer decision'
+                                : 'Next controlled transition'}
+                            </strong>
                             <small>
                               {labelize(selectedCampaign.status)} → {labelize(nextAction.to)}
                             </small>
@@ -633,7 +962,8 @@ export function ResearchWorkspace() {
                             void transition(
                               nextAction.to,
                               nextAction.predicates,
-                              `${nextAction.label} completed by the local researcher.`,
+                              `${nextAction.label} completed by the ${nextAction.actor?.role === 'SCIENTIFIC_REVIEWER' ? 'local scientific reviewer' : 'local researcher'}.`,
+                              nextAction.actor,
                             )
                           }
                         >
@@ -672,6 +1002,19 @@ export function ResearchWorkspace() {
                     </div>
                     <div className="criteria-grid">
                       <div>
+                        <h4>Researcher hypotheses</h4>
+                        {selectedTarget?.initialHypotheses.length ? (
+                          selectedTarget.initialHypotheses.map((hypothesis, index) => (
+                            <div className="check-line" key={hypothesis}>
+                              <span>{index + 1}</span>
+                              <p>{hypothesis}</p>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="target-empty">No initial hypotheses were recorded.</p>
+                        )}
+                      </div>
+                      <div>
                         <h4>Acceptance criteria</h4>
                         {selectedTarget?.acceptanceCriteria.map((criterion, index) => (
                           <div className="check-line" key={criterion}>
@@ -690,6 +1033,27 @@ export function ResearchWorkspace() {
                         ))}
                       </div>
                     </div>
+                    <HypothesisComparison record={workflowRecord} target={selectedTarget} />
+                  </Panel>
+
+                  <Panel
+                    title="Scientific record"
+                    subtitle="Durable reasoning, supervision, and measured outcomes"
+                    icon={FlaskConical}
+                  >
+                    <WorkflowRecordPanel record={workflowRecord} />
+                  </Panel>
+
+                  <Panel
+                    title="Experiment console"
+                    subtitle="Committed invocations, measurements, and output integrity"
+                    icon={TerminalSquare}
+                  >
+                    <ExperimentConsole
+                      artifacts={artifacts}
+                      record={workflowRecord}
+                      onDownloadArtifact={(record) => void downloadArtifact(record)}
+                    />
                   </Panel>
 
                   <Panel
@@ -744,9 +1108,12 @@ export function ResearchWorkspace() {
                   >
                     <div className="evidence-readiness">
                       <ReadinessRow label="Target provenance" ready={Boolean(selectedTarget)} />
-                      <ReadinessRow label="Experiment artifacts" ready={false} />
-                      <ReadinessRow label="Reproduction runs" ready={false} />
-                      <ReadinessRow label="Independent verification" ready={false} />
+                      <ReadinessRow label="Experiment artifacts" ready={hasArtifacts} />
+                      <ReadinessRow label="Reproduction runs" ready={hasReproductions} />
+                      <ReadinessRow
+                        label="Independent verification"
+                        ready={hasIndependentVerification}
+                      />
                     </div>
                     <div className="evidence-note">
                       <ShieldCheck size={16} />
@@ -755,6 +1122,18 @@ export function ResearchWorkspace() {
                         as a pass.
                       </p>
                     </div>
+                  </Panel>
+                  <Panel
+                    title="Project authority"
+                    subtitle="Immutable project memberships"
+                    icon={ShieldCheck}
+                  >
+                    <ProjectMemberManager
+                      busy={busy}
+                      members={projectMembers}
+                      project={selectedProject}
+                      onGrant={grantProjectMember}
+                    />
                   </Panel>
                   <Panel title="Local runtime" subtitle="No commercial API required" icon={Network}>
                     <div className="runtime-row">
@@ -777,9 +1156,46 @@ export function ResearchWorkspace() {
                       Inspect system health <ArrowRight size={14} />
                     </button>
                   </Panel>
+                  <Panel
+                    title="Runtime policy"
+                    subtitle="Pinned before execution"
+                    icon={TerminalSquare}
+                  >
+                    <div className="runtime-policy-list">
+                      <div>
+                        <span>Permitted model</span>
+                        <strong>{selectedCampaign.permittedModelIds.join(', ')}</strong>
+                      </div>
+                      <div>
+                        <span>Permitted executor</span>
+                        <strong>{selectedCampaign.permittedToolIds.join(', ')}</strong>
+                      </div>
+                      <div>
+                        <span>Provider fallback</span>
+                        <strong>
+                          {selectedCampaign.fallbackMode === 'STOP'
+                            ? 'Stop on provider loss'
+                            : `Approved only (${selectedCampaign.approvedFallbackModelIds.join(', ')})`}
+                        </strong>
+                      </div>
+                    </div>
+                  </Panel>
                 </div>
               </section>
             </>
+          ) : view === 'datasets' ? (
+            <FocusedPanel
+              eyebrow="Scientific inputs"
+              title="Dataset registry"
+              description="Dataset versions are immutable project records. Source pointers, licence metadata, and content hashes are retained before an experiment can rely on an input."
+            >
+              <DatasetManager
+                busy={busy}
+                datasets={datasets}
+                project={selectedProject}
+                onSubmit={createDataset}
+              />
+            </FocusedPanel>
           ) : view === 'approvals' ? (
             <FocusedPanel
               eyebrow="Authority"
@@ -792,32 +1208,19 @@ export function ResearchWorkspace() {
             <FocusedPanel
               eyebrow="Lineage"
               title="Evidence explorer"
-              description="Operational events are visible now. Reproducible scientific evidence appears only after artifacts, provenance, and verifier predicates are complete."
+              description="Immutable scientific records remain distinct from operational activity. Artifacts, verification predicates, and reproducibility manifests are retained as separate evidence."
             >
-              <div className="record-table">
-                <div className="record-head">
-                  <span>Record</span>
-                  <span>Classification</span>
-                  <span>Actor</span>
-                  <span>Recorded</span>
-                </div>
-                {events.map((event) => (
-                  <div className="record-row" key={event.eventId}>
-                    <span>
-                      <i className="record-icon">
-                        <Activity size={14} />
-                      </i>
-                      <b>{event.eventType}</b>
-                      <small>{shortId(event.eventId)}</small>
-                    </span>
-                    <span>
-                      <em className="classification operational">Operational evidence</em>
-                    </span>
-                    <span>{event.actor.id}</span>
-                    <span>{formatTime(event.occurredAt)}</span>
-                  </div>
-                ))}
-              </div>
+              <EvidenceExplorer
+                artifacts={artifacts}
+                bundles={reproducibilityBundles}
+                busy={busy}
+                campaign={selectedCampaign}
+                evidence={evidence}
+                reports={verificationReports}
+                project={selectedProject}
+                onDownloadArtifact={(record) => void downloadArtifact(record)}
+                onSubmit={createEvidence}
+              />
             </FocusedPanel>
           ) : view === 'audit' ? (
             <FocusedPanel
@@ -862,8 +1265,8 @@ export function ResearchWorkspace() {
                 <HealthCard
                   title="Model runtime"
                   status={runtimeHealth.model}
-                  detail="Local domain inference"
-                  endpoint="Python boundary"
+                  detail={`${modelManifests.length} discovered local manifest${modelManifests.length === 1 ? '' : 's'}`}
+                  endpoint="Manifest boundary"
                   icon={TerminalSquare}
                 />
                 <HealthCard
@@ -881,6 +1284,8 @@ export function ResearchWorkspace() {
                   icon={ShieldCheck}
                 />
               </div>
+              <ModelRegistry manifests={modelManifests} runtimeStatus={runtimeHealth.model} />
+              <SafetyControlPanel control={executionControl} />
             </FocusedPanel>
           )}
         </div>
@@ -889,6 +1294,7 @@ export function ResearchWorkspace() {
       {creatorOpen && (
         <CampaignCreator
           busy={busy}
+          modelManifests={modelManifests}
           onClose={() => setCreatorOpen(false)}
           onSubmit={createCampaign}
         />
@@ -946,13 +1352,18 @@ function EmptyWorkspace({ onCreate, health }: { onCreate: () => void; health: st
 
 function CampaignCreator({
   busy,
+  modelManifests,
   onClose,
   onSubmit,
 }: {
   busy: boolean;
+  modelManifests: ModelManifest[];
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const modelIds = Array.from(
+    new Set(['deterministic-statistics-v1', ...modelManifests.map((manifest) => manifest.modelId)]),
+  );
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="creator" role="dialog" aria-modal="true" aria-labelledby="creator-title">
@@ -977,6 +1388,32 @@ function CampaignCreator({
               <input name="description" defaultValue="A local, bounded validation campaign." />
             </label>
           </div>
+          <div className="creator-section-heading">
+            <strong>Permitted runtime policy</strong>
+            <span>Execution stops if this model or executor is not explicitly allowed.</span>
+          </div>
+          <div className="form-grid">
+            <label>
+              <span>Local domain model</span>
+              <select name="permittedModelId" defaultValue="deterministic-statistics-v1">
+                {modelIds.map((modelId) => (
+                  <option key={modelId} value={modelId}>
+                    {modelId}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Permitted executor</span>
+              <select name="permittedToolId" defaultValue="reference-local-executor-v1">
+                <option value="reference-local-executor-v1">Reference local executor</option>
+              </select>
+            </label>
+          </div>
+          <p className="runtime-policy-note">
+            Provider fallback is disabled for this local reference workflow. A future fallback must
+            be explicitly named, approved, and recorded in evidence provenance.
+          </p>
           <label>
             <span>Scientific goal</span>
             <textarea
@@ -995,6 +1432,92 @@ function CampaignCreator({
               defaultValue="Can the approved reference experiment reproduce an identical result hash across three runs?"
             />
           </label>
+          <label>
+            <span>
+              Initial hypotheses <small>one per line</small>
+            </span>
+            <textarea
+              name="initialHypotheses"
+              rows={3}
+              defaultValue="The frozen reference sample has a positive mean."
+            />
+          </label>
+          <div className="form-grid">
+            <label>
+              <span>Initial evidence or observation</span>
+              <textarea
+                name="initialEvidence"
+                rows={3}
+                defaultValue="The frozen reference dataset contains the values [2, 4, 6, 8]."
+              />
+            </label>
+            <label>
+              <span>
+                Evidence source <small>one pointer per line</small>
+              </span>
+              <textarea
+                name="initialEvidenceSource"
+                rows={3}
+                defaultValue="local://reference-values-v1.json"
+              />
+            </label>
+          </div>
+          <div className="creator-section-heading">
+            <strong>Immutable reference dataset</strong>
+            <span>Source, licence, and content hash are retained with this campaign.</span>
+          </div>
+          <div className="form-grid">
+            <label>
+              <span>Dataset name</span>
+              <input name="datasetName" required defaultValue="Frozen reference values" />
+            </label>
+            <label>
+              <span>Format</span>
+              <select name="datasetFormat" defaultValue="JSON">
+                <option value="JSON">JSON</option>
+                <option value="CSV">CSV</option>
+                <option value="PARQUET">Parquet</option>
+                <option value="OTHER">Other</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            <span>Dataset description</span>
+            <input
+              name="datasetDescription"
+              required
+              defaultValue="Fixed local values [2, 4, 6, 8] for deterministic summary statistics."
+            />
+          </label>
+          <div className="form-grid">
+            <label>
+              <span>Source pointer</span>
+              <input
+                name="datasetSourcePointer"
+                required
+                defaultValue="local://reference-values-v1.json"
+              />
+            </label>
+            <label>
+              <span>Licence</span>
+              <input name="datasetLicense" required defaultValue="CC0-1.0" />
+            </label>
+          </div>
+          <div className="form-grid">
+            <label>
+              <span>Content SHA-256</span>
+              <input
+                name="datasetContentDigest"
+                required
+                spellCheck="false"
+                defaultValue="sha256:3b49c633f765420086ab2ec3967a1649d598af8f20e6da28e3520c81a0146641"
+              />
+            </label>
+            <label>
+              <span>Record count</span>
+              <input name="datasetRecordCount" type="number" min="0" defaultValue="4" />
+            </label>
+          </div>
           <div className="form-grid">
             <label>
               <span>
@@ -1159,6 +1682,703 @@ function EventRow({ event, last = false }: { event: DomainEvent; last?: boolean 
   );
 }
 
+function WorkflowRecordPanel({ record }: { record: CampaignWorkflowRecord | null }) {
+  if (!record) {
+    return (
+      <PanelEmpty
+        icon={FlaskConical}
+        title="No durable workflow record yet"
+        text="The scientific record appears when the local reference workflow has generated a hypothesis and experiment plan."
+      />
+    );
+  }
+  const measurements = record.results.flatMap((result) => result.measurements);
+  const latestDecision = record.controllerDecisions.at(-1);
+  const workflowNodes = Object.values(record.receipts).sort((left, right) =>
+    left.completedAt.localeCompare(right.completedAt),
+  );
+  return (
+    <div className="workflow-record">
+      <div className="workflow-record-meta">
+        <span>run {shortId(record.runId)}</span>
+        <span>{record.receipts ? Object.keys(record.receipts).length : 0} durable receipts</span>
+        <span>updated {formatTime(record.updatedAt)}</span>
+      </div>
+      <div className="workflow-graph" aria-label="Durable workflow graph">
+        <div className="workflow-graph-heading">
+          <small>Durable workflow graph</small>
+          <span>{workflowNodes.length} committed nodes</span>
+        </div>
+        {workflowNodes.length ? (
+          <ol>
+            {workflowNodes.map((receipt, index) => (
+              <li key={receipt.nodeId}>
+                <i>{index + 1}</i>
+                <span>
+                  <strong>{labelize(receipt.nodeId)}</strong>
+                  <small>{formatTime(receipt.completedAt)}</small>
+                </span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p>No workflow nodes have committed yet.</p>
+        )}
+      </div>
+      <div className="workflow-record-grid">
+        <article>
+          <small>Hypothesis</small>
+          <strong>{record.hypothesis?.statement ?? 'Pending generation'}</strong>
+          <p>{record.hypothesis?.rationale ?? 'No hypothesis has been retained yet.'}</p>
+        </article>
+        <article>
+          <small>Experiment plan</small>
+          <strong>{record.plan?.objective ?? 'Pending plan'}</strong>
+          <p>
+            {record.plan
+              ? `${record.plan.executorId} · ${record.plan.command.join(' ')}`
+              : 'The approved executor and command will appear here.'}
+          </p>
+        </article>
+        <article>
+          <small>Supervisor finding</small>
+          <strong>{record.findings.at(-1)?.category ?? 'No finding'}</strong>
+          <p>{record.findings.at(-1)?.statement ?? 'No process-supervision finding recorded.'}</p>
+        </article>
+        <article>
+          <small>Controller decision</small>
+          <strong>{latestDecision?.decision ?? 'Awaiting decision'}</strong>
+          <p>{latestDecision?.reason ?? 'The advisory controller has not issued a decision.'}</p>
+        </article>
+      </div>
+      <div className="supervision-ledger">
+        <article>
+          <div className="supervision-ledger-heading">
+            <small>Process-supervision findings</small>
+            <span>{record.findings.length} retained</span>
+          </div>
+          {record.findings.length ? (
+            <ul>
+              {record.findings.map((finding) => (
+                <li key={finding.findingId}>
+                  <em className={finding.severity.toLowerCase()}>{finding.severity}</em>
+                  <p>{finding.statement}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No supervision finding has been committed.</p>
+          )}
+        </article>
+        <article>
+          <div className="supervision-ledger-heading">
+            <small>Controller decisions</small>
+            <span>{record.controllerDecisions.length} advisory</span>
+          </div>
+          {record.controllerDecisions.length ? (
+            <ul>
+              {record.controllerDecisions.map((decision) => (
+                <li key={decision.decisionId}>
+                  <em>{labelize(decision.decision)}</em>
+                  <p>{decision.reason}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No controller decision has been committed.</p>
+          )}
+        </article>
+      </div>
+      <div className="workflow-measurements">
+        <div>
+          <small>Measured outcomes</small>
+          <span>
+            {record.results.length} reproduction{record.results.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        {measurements.length ? (
+          <div className="measurement-list">
+            {measurements.map((measurement, index) => (
+              <span key={`${measurement.name}-${index}`}>
+                <b>{measurement.name}</b>
+                <em>
+                  {String(measurement.value)}
+                  {measurement.unit ? ` ${measurement.unit}` : ''}
+                </em>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p>No measurements have been committed yet.</p>
+        )}
+      </div>
+      {record.nextBestExperimentReport && (
+        <div className="next-experiment-report">
+          <div>
+            <small>Next best experiment</small>
+            <strong>{record.nextBestExperimentReport.recommendedObjective}</strong>
+            <p>{record.nextBestExperimentReport.rationale}</p>
+          </div>
+          <ul aria-label="Unresolved verification predicates">
+            {record.nextBestExperimentReport.unresolvedPredicateIds.map((predicateId) => (
+              <li key={predicateId}>{predicateId}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {record.lastError && (
+        <p className="workflow-record-error">
+          {record.lastError.code}: {record.lastError.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function HypothesisComparison({
+  record,
+  target,
+}: {
+  record: CampaignWorkflowRecord | null;
+  target: TargetVersion | null | undefined;
+}) {
+  const generated = record?.hypothesis;
+  return (
+    <div className="hypothesis-comparison">
+      <div className="hypothesis-comparison-heading">
+        <span>Hypothesis comparison</span>
+        <small>Human input remains distinct from generated reasoning.</small>
+      </div>
+      <div className="hypothesis-comparison-grid">
+        <article>
+          <small>Researcher supplied</small>
+          {target?.initialHypotheses.length ? (
+            <ul>
+              {target.initialHypotheses.map((hypothesis) => (
+                <li key={hypothesis}>{hypothesis}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>No starting hypothesis was recorded.</p>
+          )}
+        </article>
+        <article>
+          <small>Workflow generated</small>
+          {generated ? (
+            <>
+              <strong>{generated.statement}</strong>
+              <p>{generated.rationale}</p>
+            </>
+          ) : (
+            <p>The campaign has not committed a generated hypothesis yet.</p>
+          )}
+        </article>
+        <article>
+          <small>Falsification criteria</small>
+          {generated?.falsificationCriteria.length ? (
+            <ul>
+              {generated.falsificationCriteria.map((criterion) => (
+                <li key={criterion}>{criterion}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>Falsification criteria will be retained with the generated hypothesis.</p>
+          )}
+        </article>
+      </div>
+    </div>
+  );
+}
+
+function ExperimentConsole({
+  artifacts,
+  record,
+  onDownloadArtifact,
+}: {
+  artifacts: ArtifactRecord[];
+  record: CampaignWorkflowRecord | null;
+  onDownloadArtifact: (artifact: ArtifactRecord) => void;
+}) {
+  if (!record?.results.length) {
+    return (
+      <PanelEmpty
+        icon={TerminalSquare}
+        title="No committed experiment result"
+        text="The exact approved invocation, its measured outputs, and integrity-bound artifacts will appear here after the worker checkpoints them."
+      />
+    );
+  }
+  const artifactByDigest = new Map(
+    artifacts.map((artifact) => [artifact.artifact.digest, artifact]),
+  );
+  return (
+    <div className="experiment-console">
+      <div className="experiment-console-command">
+        <span>Approved command</span>
+        <code>{record.plan?.command.join(' ') ?? 'Plan command unavailable'}</code>
+        <small>{record.plan?.imageReference ?? 'Image provenance unavailable'}</small>
+      </div>
+      <div className="experiment-run-list">
+        {record.results.map((result, index) => (
+          <article key={result.resultId}>
+            <header>
+              <span>
+                <i className={`status-dot ${result.status === 'SUCCEEDED' ? 'active' : 'warn'}`} />
+                reproduction {index + 1}
+              </span>
+              <code>
+                {result.status} · exit {result.exitCode}
+              </code>
+            </header>
+            <p>
+              {result.measurements.length
+                ? result.measurements
+                    .map(
+                      (measurement) =>
+                        `${measurement.name}=${String(measurement.value)}${measurement.unit ?? ''}`,
+                    )
+                    .join(' · ')
+                : 'No measurements were committed.'}
+            </p>
+            <footer>
+              <span>{result.modelProvenance?.modelId ?? 'model provenance unavailable'}</span>
+              <span>{shortId(result.environmentDigest)}</span>
+              {result.artifacts.map((artifact) => {
+                const retained = artifactByDigest.get(artifact.digest);
+                return retained ? (
+                  <button
+                    className="text-button"
+                    key={artifact.digest}
+                    onClick={() => onDownloadArtifact(retained)}
+                    title={`Download ${artifact.digest}`}
+                  >
+                    <Download size={12} />
+                    {shortId(artifact.digest)}
+                  </button>
+                ) : (
+                  <span key={artifact.digest}>{shortId(artifact.digest)}</span>
+                );
+              })}
+            </footer>
+          </article>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EvidenceExplorer({
+  artifacts,
+  bundles,
+  busy,
+  campaign,
+  evidence,
+  reports,
+  project,
+  onDownloadArtifact,
+  onSubmit,
+}: {
+  artifacts: ArtifactRecord[];
+  bundles: ReproducibilityBundleManifest[];
+  busy: boolean;
+  campaign: CampaignRecord | null;
+  evidence: EvidenceRecord[];
+  reports: VerificationReport[];
+  project: ProjectRecord | null;
+  onDownloadArtifact: (artifact: ArtifactRecord) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const latestReport = reports.at(-1);
+  const latestBundle = bundles.at(-1);
+  return (
+    <div className="evidence-explorer">
+      <form className="evidence-intake" onSubmit={onSubmit}>
+        <div className="evidence-intake-heading">
+          <div>
+            <small>Researcher intake</small>
+            <strong>Retain available evidence</strong>
+          </div>
+          <button className="primary compact" disabled={busy || !campaign}>
+            {busy ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}
+            Add evidence
+          </button>
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Record type</span>
+            <select name="type" defaultValue="OBSERVATION" disabled={!campaign}>
+              <option value="OBSERVATION">Observation</option>
+              <option value="HYPOTHESIS">Hypothesis</option>
+              <option value="INTENT">Intent</option>
+              <option value="OPERATIONAL_EVIDENCE">Operational evidence</option>
+            </select>
+          </label>
+          <label>
+            <span>Source pointer</span>
+            <input
+              name="sourcePointers"
+              required
+              disabled={!campaign}
+              placeholder="local://notes/assay-observation.md"
+            />
+          </label>
+        </div>
+        <label>
+          <span>Evidence statement</span>
+          <textarea
+            name="statement"
+            required
+            disabled={!campaign}
+            rows={3}
+            placeholder="State what was observed, and keep the source separate from any conclusion."
+          />
+        </label>
+      </form>
+      {evidence.length === 0 ? (
+        <PanelEmpty
+          icon={Database}
+          title="No scientific evidence recorded"
+          text="Retain the evidence available at campaign start, then inspect hypotheses, observations, reproducible evidence, verification predicates, and exports here."
+        />
+      ) : (
+        <>
+          <div className="evidence-summary-grid">
+            <article>
+              <small>Immutable records</small>
+              <strong>{evidence.length}</strong>
+              <span>
+                {evidence.filter((record) => record.type === 'OBSERVATION').length} observations
+              </span>
+            </article>
+            <article>
+              <small>Integrity-bound artifacts</small>
+              <strong>{artifacts.length}</strong>
+              <span>
+                {artifacts.reduce((total, artifact) => total + artifact.artifact.sizeBytes, 0)}{' '}
+                bytes indexed
+              </span>
+            </article>
+            <article>
+              <small>Verification</small>
+              <strong>{latestReport?.status ?? 'NOT TESTED'}</strong>
+              <span>
+                {latestReport?.candidateEligible ? 'Candidate eligible' : 'No candidate issued'}
+              </span>
+            </article>
+            <article>
+              <small>Reproducibility bundle</small>
+              <strong>{latestBundle ? 'EXPORTED' : 'PENDING'}</strong>
+              <span>{latestBundle ? shortId(latestBundle.bundleId) : 'No manifest available'}</span>
+            </article>
+          </div>
+          <div className="record-table">
+            <div className="record-head">
+              <span>Scientific record</span>
+              <span>Evidence status</span>
+              <span>Provenance</span>
+              <span>Recorded</span>
+            </div>
+            {evidence.map((record) => (
+              <div className="record-row" key={record.evidenceId}>
+                <span>
+                  <i className="record-icon">
+                    <Database size={14} />
+                  </i>
+                  <b>{labelize(record.type)}</b>
+                  <small>{shortId(record.evidenceId)}</small>
+                </span>
+                <span>
+                  <em className={`classification ${record.status.toLowerCase()}`}>
+                    {labelize(record.status)}
+                  </em>
+                  <small>
+                    {record.artifacts.length} artifact{record.artifacts.length === 1 ? '' : 's'}
+                  </small>
+                </span>
+                <span>
+                  <b>{record.sourcePointers[0] ?? 'No external source'}</b>
+                  <small>run {shortId(record.runId)}</small>
+                </span>
+                <span>{formatTime(record.createdAt)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="artifact-records">
+            <div className="artifact-records-heading">
+              <div>
+                <small>Artifact payloads</small>
+                <p>Content-addressed outputs are retrieved only after a digest and size check.</p>
+              </div>
+              <span>{artifacts.length} preserved</span>
+            </div>
+            {artifacts.length > 0 ? (
+              <div className="artifact-record-list">
+                {artifacts.map((record) => {
+                  const lineage = artifactLineage(record);
+                  return (
+                    <div className="artifact-record-row" key={record.artifact.digest}>
+                      <span>
+                        <i className="record-icon">
+                          <Archive size={14} />
+                        </i>
+                        <b>{record.artifact.artifactId}</b>
+                        <small>
+                          {shortId(record.artifact.digest)} · {record.artifact.sizeBytes} bytes
+                        </small>
+                        {lineage && <small className="artifact-lineage">{lineage}</small>}
+                      </span>
+                      <span>{record.artifact.mediaType}</span>
+                      <button
+                        className="text-button export-manifest"
+                        disabled={!project}
+                        title={`Download ${record.artifact.digest}`}
+                        onClick={() => onDownloadArtifact(record)}
+                      >
+                        <Download size={13} />
+                        Download
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="artifact-records-empty">
+                No immutable payloads are attached to these records.
+              </p>
+            )}
+          </div>
+          <div className="evidence-detail-grid">
+            <article>
+              <small>Outcome-verification report</small>
+              {latestReport ? (
+                <>
+                  <strong>{latestReport.status}</strong>
+                  <p>
+                    {
+                      latestReport.predicateResults.filter(
+                        (predicate) => predicate.status === 'PASS',
+                      ).length
+                    }
+                    /{latestReport.predicateResults.length} predicates passed ·{' '}
+                    {latestReport.humanApprovalRequired
+                      ? 'independent review required'
+                      : 'no further review required'}
+                  </p>
+                </>
+              ) : (
+                <p>Not tested. No verifier report exists for this campaign.</p>
+              )}
+            </article>
+            <article>
+              <small>Reproducibility manifest</small>
+              {latestBundle ? (
+                <>
+                  <strong>{latestBundle.files.length} preserved files</strong>
+                  <p>
+                    {shortId(latestBundle.normalizedResultDigest)} · seed{' '}
+                    {latestBundle.invocation.seeds.join(', ')}
+                  </p>
+                  <button
+                    className="text-button export-manifest"
+                    onClick={() =>
+                      downloadJson(
+                        latestBundle,
+                        `alphalab-reproducibility-manifest-${latestBundle.bundleId}.json`,
+                      )
+                    }
+                  >
+                    <Download size={13} />
+                    Download manifest
+                  </button>
+                </>
+              ) : (
+                <p>Not exported. A bundle is created only after a verifiable result.</p>
+              )}
+            </article>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function DatasetManager({
+  busy,
+  datasets,
+  project,
+  onSubmit,
+}: {
+  busy: boolean;
+  datasets: DatasetVersion[];
+  project: ProjectRecord | null;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  if (!project) {
+    return (
+      <PanelEmpty
+        icon={Database}
+        title="No project selected"
+        text="Create a project before registering an immutable dataset version."
+      />
+    );
+  }
+  return (
+    <div className="dataset-manager">
+      <form className="dataset-form" onSubmit={onSubmit}>
+        <div className="dataset-form-heading">
+          <div>
+            <small>Register an immutable version</small>
+            <strong>{project.name}</strong>
+          </div>
+          <button className="primary" disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}
+            Register version
+          </button>
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Dataset name</span>
+            <input name="name" required placeholder="Validated assay records" />
+          </label>
+          <label>
+            <span>Format</span>
+            <select name="format" defaultValue="CSV">
+              <option value="CSV">CSV</option>
+              <option value="JSON">JSON</option>
+              <option value="PARQUET">Parquet</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          <span>Description</span>
+          <input
+            name="description"
+            required
+            placeholder="What this version contains and its intended use"
+          />
+        </label>
+        <div className="form-grid">
+          <label>
+            <span>Source pointer</span>
+            <input name="sourcePointer" required placeholder="local://datasets/assay-v1.csv" />
+          </label>
+          <label>
+            <span>Licence</span>
+            <input name="license" required placeholder="CC-BY-4.0" />
+          </label>
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Content SHA-256</span>
+            <input name="contentDigest" required placeholder="sha256:…" spellCheck="false" />
+          </label>
+          <label>
+            <span>Record count</span>
+            <input name="recordCount" required type="number" min="0" placeholder="0" />
+          </label>
+        </div>
+      </form>
+      <div className="record-table">
+        <div className="record-head">
+          <span>Dataset version</span>
+          <span>Source and licence</span>
+          <span>Integrity</span>
+          <span>Registered</span>
+        </div>
+        {datasets.map((dataset) => (
+          <div className="record-row" key={dataset.datasetVersionId}>
+            <span>
+              <i className="record-icon">
+                <Database size={14} />
+              </i>
+              <b>{dataset.name}</b>
+              <small>
+                v{dataset.version} · {dataset.format} · {dataset.recordCount ?? 'unknown'} records
+              </small>
+            </span>
+            <span>
+              <b>{dataset.sourcePointer}</b>
+              <small>{dataset.license}</small>
+            </span>
+            <span>
+              <b>{shortId(dataset.contentDigest)}</b>
+              <small>{dataset.artifact ? 'artifact recorded' : 'source-only registration'}</small>
+            </span>
+            <span>{formatTime(dataset.createdAt)}</span>
+          </div>
+        ))}
+        {datasets.length === 0 && (
+          <div className="dataset-empty">
+            No dataset versions registered for this project. Register a local source before binding
+            it to a campaign.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProjectMemberManager({
+  busy,
+  members,
+  project,
+  onGrant,
+}: {
+  busy: boolean;
+  members: ProjectMember[];
+  project: ProjectRecord | null;
+  onGrant: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  if (!project) {
+    return (
+      <PanelEmpty
+        icon={ShieldCheck}
+        title="No project selected"
+        text="Project membership becomes available when a project is created."
+      />
+    );
+  }
+  return (
+    <div className="member-manager">
+      <div className="member-list" aria-label="Project members">
+        {members.map((member) => (
+          <div className="member-row" key={member.actorId}>
+            <span className="member-avatar">{member.actorId.slice(0, 2).toUpperCase()}</span>
+            <div>
+              <strong>{member.actorId}</strong>
+              <small>Granted by {member.createdBy}</small>
+            </div>
+            <em className={`member-role ${member.role.toLowerCase()}`}>{labelize(member.role)}</em>
+          </div>
+        ))}
+      </div>
+      <form className="member-grant-form" onSubmit={onGrant}>
+        <label>
+          <span>Actor ID</span>
+          <input name="actorId" required minLength={3} placeholder="researcher-2" />
+        </label>
+        <label>
+          <span>Authority</span>
+          <select name="role" defaultValue="RESEARCHER">
+            <option value="RESEARCHER">Researcher</option>
+            <option value="SCIENTIFIC_REVIEWER">Scientific reviewer</option>
+            <option value="VIEWER">Viewer</option>
+          </select>
+        </label>
+        <button className="secondary" disabled={busy}>
+          {busy ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}
+          Grant access
+        </button>
+      </form>
+      <p className="member-note">
+        Membership changes are append-only. Production identity binding remains separate from the
+        local development actor profile.
+      </p>
+    </div>
+  );
+}
+
 function ApprovalList({
   approvals,
   busy,
@@ -1251,6 +2471,170 @@ function PanelEmpty({
       <strong>{title}</strong>
       <p>{text}</p>
     </div>
+  );
+}
+
+function ModelRegistry({
+  manifests,
+  runtimeStatus,
+}: {
+  manifests: ModelManifest[];
+  runtimeStatus: HealthState;
+}) {
+  return (
+    <section className="model-registry" aria-labelledby="model-registry-title">
+      <header className="model-registry-heading">
+        <div>
+          <span>Provider manifests</span>
+          <h2 id="model-registry-title">Runtime model inventory</h2>
+        </div>
+        <div className="model-registry-status">
+          <i className={`health-dot ${runtimeStatus}`} />
+          {runtimeStatus}
+        </div>
+      </header>
+      {manifests.length ? (
+        <div className="model-manifest-grid">
+          {manifests.map((manifest) => (
+            <article className="model-manifest" key={`${manifest.providerId}-${manifest.modelId}`}>
+              <div className="model-manifest-topline">
+                <span className={`boundary-tag ${manifest.dataBoundary.toLowerCase()}`}>
+                  {manifest.dataBoundary.toLowerCase()} boundary
+                </span>
+                <small>adapter {manifest.adapterVersion}</small>
+              </div>
+              <h3>{manifest.modelId}</h3>
+              <p>{manifest.providerId}</p>
+              <dl>
+                <div>
+                  <dt>Revision</dt>
+                  <dd>{shortId(manifest.revisionDigest)}</dd>
+                </div>
+                <div>
+                  <dt>Context</dt>
+                  <dd>{manifest.contextLimit.toLocaleString()} tokens</dd>
+                </div>
+                <div>
+                  <dt>Concurrency</dt>
+                  <dd>{manifest.maxConcurrency} active</dd>
+                </div>
+                <div>
+                  <dt>Remote code</dt>
+                  <dd>{manifest.remoteCodeRequired ? 'required' : 'disabled'}</dd>
+                </div>
+              </dl>
+              <div className="capability-list" aria-label="Declared capabilities">
+                {manifest.capabilities.map((capability) => (
+                  <span key={capability}>{labelize(capability)}</span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <PanelEmpty
+          icon={ServerCog}
+          title={runtimeStatus === 'offline' ? 'Model runtime unreachable' : 'No manifest returned'}
+          text="A campaign cannot infer provider capability or data-boundary policy until the model runtime serves a typed manifest."
+        />
+      )}
+    </section>
+  );
+}
+
+const executionControlLabels: Array<{
+  key: keyof Pick<
+    ExecutionControl,
+    | 'campaignExecutionEnabled'
+    | 'experimentExecutionEnabled'
+    | 'externalNetworkAccessEnabled'
+    | 'externalModelProvidersEnabled'
+    | 'huggingFaceModelLoadingEnabled'
+    | 'automaticFallbackEnabled'
+    | 'backgroundSchedulingEnabled'
+    | 'evidenceReadOnly'
+  >;
+  label: string;
+  detail: string;
+}> = [
+  {
+    key: 'campaignExecutionEnabled',
+    label: 'Campaign execution',
+    detail: 'Start new controlled runs',
+  },
+  {
+    key: 'experimentExecutionEnabled',
+    label: 'Experiment execution',
+    detail: 'Approve runnable experiments',
+  },
+  {
+    key: 'externalNetworkAccessEnabled',
+    label: 'External network',
+    detail: 'Outbound data access',
+  },
+  {
+    key: 'externalModelProvidersEnabled',
+    label: 'External providers',
+    detail: 'Non-local model routes',
+  },
+  {
+    key: 'huggingFaceModelLoadingEnabled',
+    label: 'Model loading',
+    detail: 'Hugging Face load path',
+  },
+  { key: 'automaticFallbackEnabled', label: 'Automatic fallback', detail: 'Provider substitution' },
+  { key: 'backgroundSchedulingEnabled', label: 'Background scheduling', detail: 'Unattended work' },
+  { key: 'evidenceReadOnly', label: 'Evidence preservation', detail: 'Freeze mutable work' },
+];
+
+function SafetyControlPanel({ control }: { control: ExecutionControl | null }) {
+  return (
+    <section className="safety-control-panel" aria-labelledby="safety-control-title">
+      <header className="safety-control-heading">
+        <div>
+          <span>Emergency controls</span>
+          <h2 id="safety-control-title">Organization execution policy</h2>
+          <p>
+            Read-only for researchers. Changes require an organization administrator and a version
+            match.
+          </p>
+        </div>
+        {control && <code>policy v{control.version}</code>}
+      </header>
+      {control ? (
+        <div className="safety-control-grid">
+          {executionControlLabels.map((item) => {
+            const enabled = control[item.key];
+            const preservation = item.key === 'evidenceReadOnly';
+            const active = preservation ? enabled : !enabled;
+            return (
+              <article className={active ? 'control-state active' : 'control-state'} key={item.key}>
+                <i className={active ? 'health-dot offline' : 'health-dot online'} />
+                <div>
+                  <strong>{item.label}</strong>
+                  <small>{item.detail}</small>
+                </div>
+                <b>
+                  {preservation
+                    ? enabled
+                      ? 'active'
+                      : 'standby'
+                    : enabled
+                      ? 'enabled'
+                      : 'blocked'}
+                </b>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <PanelEmpty
+          icon={ShieldCheck}
+          title="Execution controls unavailable"
+          text="The safety-control endpoint did not return a policy, so the workspace cannot present its operator state."
+        />
+      )}
+    </section>
   );
 }
 

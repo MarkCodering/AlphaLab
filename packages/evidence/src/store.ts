@@ -61,6 +61,14 @@ export class LocalArtifactStore {
     return bytes;
   }
 
+  async getBytesByDigest(digest: string): Promise<Buffer> {
+    const bytes = await readFile(this.pathForDigest(digest));
+    if (sha256(bytes) !== digest) {
+      throw new EvidenceStoreError('ARTIFACT_INTEGRITY_FAILED', 'Artifact content hash differs');
+    }
+    return bytes;
+  }
+
   sourcePath(artifact: ArtifactReference): string {
     return this.pathForDigest(artifact.digest);
   }

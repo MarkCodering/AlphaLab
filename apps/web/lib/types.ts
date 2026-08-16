@@ -4,8 +4,14 @@ import type {
   BudgetLimit,
   BudgetUsage,
   CampaignStatus,
+  CampaignWorkflowRecord,
+  DatasetVersion,
   DomainEvent,
   EvidenceRecord,
+  ExecutorManifest,
+  ExecutionControl,
+  ModelManifest,
+  ProjectMember,
   ProposedAction,
   ReproducibilityBundleManifest,
   TargetVersion,
@@ -26,6 +32,11 @@ export interface CampaignRecord {
   organizationId: string;
   projectId: string;
   targetVersionId: string;
+  datasetVersionIds: string[];
+  permittedModelIds: string[];
+  permittedToolIds: string[];
+  fallbackMode: 'STOP' | 'APPROVED_ONLY';
+  approvedFallbackModelIds: string[];
   status: CampaignStatus;
   resumeStatus: CampaignStatus | null;
   stateVersion: number;
@@ -55,8 +66,14 @@ export interface ArtifactRecord {
 }
 
 export type {
+  CampaignWorkflowRecord,
+  DatasetVersion,
   DomainEvent,
   EvidenceRecord,
+  ExecutorManifest,
+  ExecutionControl,
+  ModelManifest,
+  ProjectMember,
   ReproducibilityBundleManifest,
   TargetVersion,
   VerificationReport,

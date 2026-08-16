@@ -5,6 +5,7 @@ import {
   ExperimentInvocationSchema,
   ExperimentPlanSchema,
   HypothesisSchema,
+  NextBestExperimentReportSchema,
   ProposedActionSchema,
   SupervisorFindingSchema,
   type Actor,
@@ -192,6 +193,7 @@ export class CampaignWorkflow {
         snapshot,
         snapshot.plan!,
         input.serviceActor,
+        input.verificationPolicy.requiredReproductions,
       );
       snapshot.campaign = transitionCampaign(snapshot.campaign, {
         to: 'WAITING_FOR_APPROVAL',
@@ -219,62 +221,89 @@ export class CampaignWorkflow {
       await this.checkpoint(snapshot);
     }
 
-    if (snapshot.results.length === 0) {
-      snapshot.campaign = this.reserve(snapshot.campaign, {
-        experiments: 1,
-        computeMilliUnits: snapshot.plan.estimatedComputeMilliUnits,
-        wallClockSeconds: snapshot.plan.estimatedWallClockSeconds,
-        activeChildren: 1,
-      });
-      snapshot.campaign = transitionCampaign(snapshot.campaign, {
-        to: 'RUNNING_EXPERIMENT',
-        actor: input.serviceActor,
-        predicates: { approvalValid: true, budgetReserved: true },
-        reason: 'The exact experiment action has valid human approval.',
-        occurredAt: this.now(),
-      }).campaign;
-      await this.checkpoint(snapshot);
+    if (snapshot.results.length < input.verificationPolicy.requiredReproductions) {
+      for (
+        let reproduction = snapshot.results.length + 1;
+        reproduction <= input.verificationPolicy.requiredReproductions;
+        reproduction += 1
+      ) {
+        snapshot.campaign = this.reserve(snapshot.campaign, {
+          experiments: 1,
+          computeMilliUnits: snapshot.plan.estimatedComputeMilliUnits,
+          wallClockSeconds: snapshot.plan.estimatedWallClockSeconds,
+          activeChildren: 1,
+        });
+        if (snapshot.campaign.status === 'WAITING_FOR_APPROVAL') {
+          snapshot.campaign = transitionCampaign(snapshot.campaign, {
+            to: 'RUNNING_EXPERIMENT',
+            actor: input.serviceActor,
+            predicates: { approvalValid: true, budgetReserved: true },
+            reason: 'The exact approved reproduction set is starting.',
+            occurredAt: this.now(),
+          }).campaign;
+        }
+        await this.checkpoint(snapshot);
 
-      const invocation = ExperimentInvocationSchema.parse({
-        contractVersion: '1.0',
-        invocationId: `${snapshot.runId}-experiment-1`,
-        experimentRunId: `${snapshot.runId}-experiment-run-1`,
-        organizationId: snapshot.campaign.organizationId,
-        projectId: snapshot.campaign.projectId,
-        campaignId: snapshot.campaign.id,
-        planDigest: digestValue(snapshot.plan),
-        approvalId: snapshot.approval.approvalId,
-        imageReference: snapshot.plan.imageReference,
-        imageDigest: snapshot.plan.imageDigest,
-        command: snapshot.plan.command,
-        inputs: [],
-        resources: {
-          cpuMillis: 1000,
-          memoryMiB: 512,
-          gpuCount: 0,
-          diskMiB: 1024,
-          timeoutSeconds: snapshot.plan.estimatedWallClockSeconds,
-          maxOutputBytes: 10_000_000,
-        },
-        networkPolicy: { mode: 'DENY_ALL', allowedDestinations: [] },
-        idempotencyKey: `${snapshot.runId}-experiment-1`,
-      });
-      const reconciled = await this.dependencies.executor.lookup(invocation.invocationId);
-      const result = reconciled ?? (await this.dependencies.executor.execute(invocation));
-      snapshot.results.push(result);
-      snapshot.campaign = {
-        ...snapshot.campaign,
-        budgetUsage: {
-          ...snapshot.campaign.budgetUsage,
-          activeChildren: Math.max(0, snapshot.campaign.budgetUsage.activeChildren - 1),
-        },
-      };
-      this.receipt(snapshot, 'experiment', invocation, result);
+        const invocation = ExperimentInvocationSchema.parse({
+          contractVersion: '1.0',
+          invocationId: `${snapshot.runId}-experiment-${reproduction}`,
+          experimentRunId: `${snapshot.runId}-experiment-run-${reproduction}`,
+          organizationId: snapshot.campaign.organizationId,
+          projectId: snapshot.campaign.projectId,
+          campaignId: snapshot.campaign.id,
+          planDigest: digestValue(snapshot.plan),
+          approvalId: snapshot.approval.approvalId,
+          imageReference: snapshot.plan.imageReference,
+          imageDigest: snapshot.plan.imageDigest,
+          command: snapshot.plan.command,
+          inputs: [],
+          resources: {
+            cpuMillis: 1000,
+            memoryMiB: 512,
+            gpuCount: 0,
+            diskMiB: 1024,
+            timeoutSeconds: snapshot.plan.estimatedWallClockSeconds,
+            maxOutputBytes: 10_000_000,
+          },
+          networkPolicy: { mode: 'DENY_ALL', allowedDestinations: [] },
+          idempotencyKey: `${snapshot.runId}-experiment-${reproduction}`,
+        });
+        const reconciled = await this.dependencies.executor.lookup(invocation.invocationId);
+        let result: Awaited<ReturnType<ExperimentExecutor['execute']>>;
+        try {
+          result = reconciled ?? (await this.dependencies.executor.execute(invocation));
+        } catch (error) {
+          snapshot.campaign = {
+            ...snapshot.campaign,
+            budgetUsage: {
+              ...snapshot.campaign.budgetUsage,
+              activeChildren: Math.max(0, snapshot.campaign.budgetUsage.activeChildren - 1),
+            },
+          };
+          snapshot.lastError = {
+            code: 'EXPERIMENT_EXECUTION_FAILED',
+            message: error instanceof Error ? error.message : 'Experiment execution failed',
+          };
+          await this.checkpoint(snapshot);
+          throw error;
+        }
+        snapshot.results.push(result);
+        snapshot.campaign = {
+          ...snapshot.campaign,
+          budgetUsage: {
+            ...snapshot.campaign.budgetUsage,
+            activeChildren: Math.max(0, snapshot.campaign.budgetUsage.activeChildren - 1),
+          },
+        };
+        delete snapshot.lastError;
+        this.receipt(snapshot, `experiment-${reproduction}`, invocation, result);
+        await this.checkpoint(snapshot);
+      }
       snapshot.campaign = transitionCampaign(snapshot.campaign, {
         to: 'VERIFYING',
         actor: input.serviceActor,
         predicates: { executionCompleted: true },
-        reason: 'Experiment result and artifacts were persisted.',
+        reason: 'The approved reproduction set and artifacts were persisted.',
         occurredAt: this.now(),
       }).campaign;
       await this.checkpoint(snapshot);
@@ -291,21 +320,46 @@ export class CampaignWorkflow {
         createdAt: this.now(),
       });
       this.receipt(snapshot, 'verification', snapshot.results, snapshot.verificationReport);
-      const nextStatus = snapshot.verificationReport.candidateEligible
-        ? 'DISCOVERY_CANDIDATE'
-        : 'NEXT_EXPERIMENT_READY';
+      const provenanceComplete = snapshot.results.every(hasCompleteProvenance);
+      const candidateEligible = snapshot.verificationReport.candidateEligible && provenanceComplete;
+      const nextStatus = candidateEligible ? 'DISCOVERY_CANDIDATE' : 'NEXT_EXPERIMENT_READY';
       snapshot.campaign = transitionCampaign(snapshot.campaign, {
         to: nextStatus,
         actor: input.serviceActor,
         predicates: {
-          provenanceComplete: snapshot.results.every((result) => result.artifacts.length > 0),
-          verificationPassed: snapshot.verificationReport.candidateEligible,
+          provenanceComplete,
+          verificationPassed: candidateEligible,
         },
-        reason: snapshot.verificationReport.candidateEligible
+        reason: candidateEligible
           ? 'All automated verification predicates passed.'
-          : 'Evidence is insufficient; prepare the next experiment.',
+          : provenanceComplete
+            ? 'Evidence is insufficient; prepare the next experiment.'
+            : 'Evidence provenance is incomplete; prepare a corrected experiment.',
         occurredAt: this.now(),
       }).campaign;
+      await this.checkpoint(snapshot);
+    }
+
+    if (
+      snapshot.campaign.status === 'NEXT_EXPERIMENT_READY' &&
+      snapshot.verificationReport &&
+      !snapshot.nextBestExperimentReport
+    ) {
+      const recommendation = this.recommendNextExperiment(snapshot);
+      snapshot.nextBestExperimentReport = recommendation;
+      snapshot.controllerDecisions.push(
+        ControllerDecisionSchema.parse({
+          decisionId: `dec_${randomUUID()}`,
+          campaignId: snapshot.campaign.id,
+          runId: snapshot.runId,
+          decision: 'REPAIR',
+          reason: recommendation.rationale,
+          policyPredicateIds: recommendation.unresolvedPredicateIds,
+          authority: 'ADVISORY',
+          createdAt: this.now(),
+        }),
+      );
+      this.receipt(snapshot, 'next-experiment', snapshot.verificationReport, recommendation);
       await this.checkpoint(snapshot);
     }
 
@@ -328,6 +382,14 @@ export class CampaignWorkflow {
           command: snapshot.plan.command,
           parameters: snapshot.plan.parameters,
           seeds: input.seeds,
+          ...(firstResult.executionProvenance
+            ? {
+                codeRevision: firstResult.executionProvenance.codeRevision,
+                codeRevisionVerified: firstResult.executionProvenance.codeRevisionVerified,
+                modelAdapter: firstResult.executionProvenance.modelAdapter,
+                datasets: firstResult.executionProvenance.datasets,
+              }
+            : {}),
         },
         normalizedResultDigest: firstResult.normalizedResultDigest as `sha256:${string}`,
       });
@@ -360,6 +422,18 @@ export class CampaignWorkflow {
     if (input.researcher.role !== 'RESEARCHER' || input.serviceActor.role !== 'SYSTEM_SERVICE') {
       throw new Error('Workflow actors do not have the required roles');
     }
+    if (!input.campaign.permittedModelIds.includes(input.modelId)) {
+      throw new Error(`Campaign model policy does not permit ${input.modelId}`);
+    }
+    if (!input.campaign.permittedToolIds.includes(input.executorId)) {
+      throw new Error(`Campaign tool policy does not permit ${input.executorId}`);
+    }
+    if (
+      input.campaign.fallbackMode === 'APPROVED_ONLY' &&
+      input.campaign.approvedFallbackModelIds.length === 0
+    ) {
+      throw new Error('Approved-only fallback requires an explicitly permitted fallback model');
+    }
     if (input.seeds.length === 0) throw new Error('At least one random seed is required');
   }
 
@@ -367,6 +441,7 @@ export class CampaignWorkflow {
     snapshot: CampaignWorkflowSnapshot,
     plan: ExperimentPlan,
     actor: Actor,
+    reproductionCount: number,
   ): ProposedAction {
     const action = ProposedActionSchema.parse({
       contractVersion: '1.0',
@@ -381,12 +456,47 @@ export class CampaignWorkflow {
         imageReference: plan.imageReference,
         imageDigest: plan.imageDigest,
         command: plan.command,
+        reproductionCount,
       },
       requestedBy: actor,
       requestedAt: this.now(),
     });
     digestAction(action);
     return action;
+  }
+
+  private recommendNextExperiment(snapshot: CampaignWorkflowSnapshot) {
+    const verification = snapshot.verificationReport;
+    if (!verification) throw new Error('Cannot recommend a next experiment before verification');
+    const unresolved = verification.predicateResults.filter(
+      (predicate) => predicate.status !== 'PASS',
+    );
+    const unresolvedPredicateIds = unresolved.length
+      ? unresolved.map((predicate) => predicate.predicateId)
+      : ['candidate-eligibility'];
+    const evidenceGaps = unresolved.length
+      ? unresolved.map((predicate) => predicate.reason)
+      : ['The candidate did not satisfy the complete eligibility predicate.'];
+    return NextBestExperimentReportSchema.parse({
+      contractVersion: '1.0',
+      reportId: `nbr_${randomUUID()}`,
+      organizationId: snapshot.campaign.organizationId,
+      projectId: snapshot.campaign.projectId,
+      campaignId: snapshot.campaign.id,
+      runId: snapshot.runId,
+      ...(snapshot.hypothesis ? { hypothesisId: snapshot.hypothesis.hypothesisId } : {}),
+      verificationReportId: verification.reportId,
+      summary: 'Verification did not establish a discovery candidate.',
+      unresolvedPredicateIds,
+      evidenceGaps,
+      recommendedObjective: snapshot.hypothesis
+        ? `Design a bounded follow-on experiment that resolves the failed evidence for: ${snapshot.hypothesis.statement}`
+        : 'Design a bounded follow-on experiment that resolves the failed verification predicates.',
+      rationale:
+        'This advisory report identifies gaps only. A new experiment plan remains subject to campaign policy and human approval.',
+      authority: 'ADVISORY',
+      createdAt: this.now(),
+    });
   }
 
   private reserve(campaign: Campaign, request: Parameters<typeof reserveBudget>[2]): Campaign {
@@ -417,13 +527,28 @@ export class CampaignWorkflow {
   }
 }
 
+function hasCompleteProvenance(result: CampaignWorkflowSnapshot['results'][number]): boolean {
+  const provenance = result.executionProvenance;
+  return Boolean(
+    result.artifacts.length > 0 &&
+    result.modelProvenance &&
+    provenance?.codeRevisionVerified &&
+    provenance.modelAdapter.adapterVersion &&
+    provenance.modelAdapter.promptTemplateVersion &&
+    provenance.datasets.length > 0 &&
+    provenance.invocation.command.length > 0 &&
+    provenance.invocation.seeds.length > 0,
+  );
+}
+
 function buildHypothesisPrompt(target: TargetVersion): string {
   return [
     'Generate one falsifiable scientific hypothesis as JSON.',
     `Scientific goal: ${target.scientificGoal}`,
     `Research question: ${target.researchQuestion}`,
+    `Researcher initial hypotheses: ${target.initialHypotheses.join('; ') || 'None supplied.'}`,
     `Acceptance criteria: ${target.acceptanceCriteria.join('; ')}`,
-    'Do not redefine the goal or acceptance criteria.',
+    'Compare against the researcher hypotheses; do not redefine the goal or acceptance criteria.',
   ].join('\n');
 }
 

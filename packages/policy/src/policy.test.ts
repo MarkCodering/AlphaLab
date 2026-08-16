@@ -36,7 +36,7 @@ function approvalFor(proposed: ProposedAction): ApprovalArtifact {
     decision: 'APPROVED',
     decidedBy: approver,
     decidedAt: now,
-    expiresAt: '2026-08-16T00:00:00+00:00',
+    expiresAt: '2099-01-01T00:00:00+00:00',
     singleUse: true,
     consumedAt: null,
     reason: 'Reviewed exact experiment manifest.',

@@ -15,6 +15,31 @@ function result(id: string, score = 0.91): ExperimentResult {
     artifacts: [
       { artifactId: `artifact-${id}`, digest, mediaType: 'application/json', sizeBytes: 10 },
     ],
+    modelProvenance: {
+      providerId: 'local-provider',
+      modelId: 'deterministic-model',
+      modelRevisionDigest: environmentDigest,
+      normalizedResultDigest: digest,
+    },
+    executionProvenance: {
+      codeRevision: '7f3b5c9a04bdc1e2f7f8e8e8693e7f05b27fe6b8',
+      codeRevisionVerified: true,
+      modelAdapter: {
+        providerId: 'local-provider',
+        modelId: 'deterministic-model',
+        modelRevisionDigest: environmentDigest,
+        adapterVersion: '1.0.0',
+        promptTemplateVersion: 'verifier-test-v1',
+      },
+      datasets: [{ datasetVersionId: 'dataset-version-1', contentDigest: digest }],
+      invocation: {
+        imageReference: `python@${environmentDigest}`,
+        imageDigest: environmentDigest,
+        command: ['python', 'experiment.py'],
+        parameters: { seed: 7 },
+        seeds: [7],
+      },
+    },
     normalizedResultDigest: digest,
     environmentDigest,
     startedAt: '2026-08-15T00:00:00+00:00',
@@ -61,5 +86,27 @@ describe('deterministic outcome verifier', () => {
     });
     expect(report.status).toBe('NOT_TESTED');
     expect(report.candidateEligible).toBe(false);
+  });
+
+  it('rejects a result with an unverified source revision', () => {
+    const incomplete = {
+      ...result('result-1'),
+      executionProvenance: {
+        ...result('result-1').executionProvenance!,
+        codeRevisionVerified: false,
+      },
+    };
+    const report = new DeterministicOutcomeVerifier().verify({
+      organizationId: 'organization-1',
+      projectId: 'project-1',
+      campaignId: 'campaign-1',
+      results: [incomplete, { ...incomplete, resultId: 'result-2' }],
+      findings: [],
+      policy,
+    });
+    expect(report.status).toBe('NOT_VERIFIED');
+    expect(report.predicateResults).toContainEqual(
+      expect.objectContaining({ predicateId: 'predicate-provenance-complete', status: 'FAIL' }),
+    );
   });
 });

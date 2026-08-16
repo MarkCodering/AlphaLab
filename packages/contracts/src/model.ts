@@ -15,6 +15,7 @@ export const ModelCapabilitySchema = z.enum([
   'RERANKING',
   'DOMAIN_INFERENCE',
 ]);
+export type ModelCapability = z.infer<typeof ModelCapabilitySchema>;
 
 export const ModelManifestSchema = z.object({
   contractVersion: ContractVersionSchema,

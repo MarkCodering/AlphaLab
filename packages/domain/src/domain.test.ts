@@ -28,6 +28,11 @@ function campaign(status: Campaign['status']): Campaign {
     organizationId: 'organization-1',
     projectId: 'project-1',
     targetVersionId: 'target-version-1',
+    datasetVersionIds: [],
+    permittedModelIds: ['reference-model'],
+    permittedToolIds: ['deterministic-executor'],
+    fallbackMode: 'STOP',
+    approvedFallbackModelIds: [],
     status,
     resumeStatus: null,
     stateVersion: 0,
@@ -99,6 +104,18 @@ describe('campaign state machine', () => {
       occurredAt: timestamp,
     });
     expect(result.campaign.resumeStatus).toBe('RUNNING_EXPERIMENT');
+  });
+
+  it('allows terminal campaign records to be archived without deleting their evidence', () => {
+    const result = transitionCampaign(campaign('CANCELLED'), {
+      to: 'ARCHIVED',
+      actor: researcher,
+      predicates: {},
+      reason: 'Retain the cancelled campaign record for audit.',
+      occurredAt: timestamp,
+    });
+    expect(result.campaign.status).toBe('ARCHIVED');
+    expect(result.evidenceType).toBe('campaign.archived');
   });
 });
 

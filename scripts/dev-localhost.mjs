@@ -74,6 +74,27 @@ const environment = {
   ALPHALAB_VERIFIER_ORIGIN: `http://${host}:${ports.verifier}`,
 };
 
+async function run(command, args, env) {
+  await new Promise((resolve, reject) => {
+    const process = spawn(command, args, { env, stdio: 'inherit' });
+    process.once('error', reject);
+    process.once('exit', (code, signal) => {
+      if (code === 0) return resolve();
+      reject(
+        new Error(
+          `${command} ${args.join(' ')} ${signal ? `received ${signal}` : `exited ${code}`}`,
+        ),
+      );
+    });
+  });
+}
+
+// Runtime packages export compiled ESM. Build them before app watchers start so
+// a fresh `pnpm dev` never imports stale package dist files after a contract or
+// domain change. Package development remains explicit: restart this profile
+// after editing a shared package to pick up the new runtime output.
+await run('pnpm', ['-r', '--filter', './packages/**', 'build'], environment);
+
 process.stdout.write(
   [
     'AlphaLab localhost profile',
